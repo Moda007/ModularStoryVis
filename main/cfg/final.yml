@@ -1,0 +1,42 @@
+CONFIG_NAME: 'final_model'
+
+DATASET_NAME: ''
+EMBEDDING_TYPE: 'universal'
+GPU_ID: '0'
+Z_DIM: 100
+DATA_DIR: '../img_pororo/'
+IMSIZE: 64
+SESIZE: 64
+WORKERS: 6 
+STAGE: 1
+VIDEO_LEN: 5
+VIS_COUNT: 10
+LABEL_NUM: 9
+EVALUATE_FID_SCORE: False
+USE_SEQ_CONSISTENCY: False
+CASCADE_MODEL: False
+CONSISTENCY_RATIO: 1.0
+SEGMENT_LEARNING: True
+SEGMENT_RATIO: 1.0
+IMAGE_RATIO: 5.0
+TRAIN:
+    FLAG: True
+    SEGMENT_NAME: 'img_segment' # the segmentation images before/after refinement (img_segment/img_segment_refine)
+    IM_BATCH_SIZE: 90
+    ST_BATCH_SIZE: 18
+    MAX_EPOCH: 120
+    LR_DECAY_EPOCH: 20
+    SNAPSHOT_INTERVAL: 10
+    DISCRIMINATOR_LR: 0.0004
+    GENERATOR_LR: 0.0001
+    COEFF:
+      KL: 1.0
+
+GAN:
+    CONDITION_DIM: 124
+    DF_DIM: 124
+    GF_DIM: 256
+    GF_SEG_DIM: 1024
+
+TEXT:
+    DIMENSION: 356
