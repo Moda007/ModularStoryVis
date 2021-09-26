@@ -26,6 +26,10 @@ from train_mart import init_feature_extractor
 from mart.recurrent import RecursiveTransformer
 import torchvision.transforms as transforms
 
+# Moda: import model classes and new classes
+from .model import CreateModel, StoryGAN, STAGE1_D_IMG, STAGE1_D_SEG, STAGE1_D_STY_V2, STAGE1_D_SEG
+from .model import NoMartNoCascade, MartNoCascade, NoMartCascade, MartCascade
+
 
 class PerceptualLoss(nn.Module):
     def __init__(self):
@@ -68,13 +72,17 @@ class GANTrainer(object):
         self.use_mart = cfg.USE_MART
         self.use_segment = cfg.SEGMENT_LEARNING # Moda
 
+        # self.gpus = []
         s_gpus = cfg.GPU_ID.split(',')
         self.gpus = [int(ix) for ix in s_gpus]
+        self.num_gpus = len(self.gpus)
         self.num_gpus = len(self.gpus)
         self.imbatch_size = cfg.TRAIN.IM_BATCH_SIZE * self.num_gpus
         self.stbatch_size = cfg.TRAIN.ST_BATCH_SIZE * self.num_gpus
         self.ratio = ratio
 
+        self.cfg = cfg
+        
         # Moda
         ## TODO: Add continue_ckpt if needed
         # self.con_ckpt = args.continue_ckpt
@@ -83,17 +91,20 @@ class GANTrainer(object):
             assert cfg.VOCAB_SIZE is not None
         self.img_dual = cfg.IMG_DUAL
         self.story_dual = cfg.STORY_DUAL
-
-        torch.cuda.set_device(self.gpus[0])
-        cudnn.benchmark = True
-
-        self.cfg = cfg
+        
+        self.cuda_is_available = False # Moda-fix: add condition
+        self.map_location = 'cpu' # Moda-fix: add map_location, might be redundant!
+        if torch.cuda.is_available():
+            torch.cuda.set_device(self.gpus[0])
+            cudnn.benchmark = True
+            self.cuda_is_available = True
+            self.map_location=lambda storage, loc: storage.cuda() # Moda-fix: might be redundant!
 
         if cfg.TRAIN.PERCEPTUAL_LOSS:
             self.perceptual_loss_net = PerceptualLoss()
 
     # ############# For training stageI GAN #############
-    def load_network_stageI(self, Mart=False, Cascade=False): # Moda: extra paramters are added
+    def load_network_stageI(self): # Moda: extra paramters are added
         # Moda: no need for this condition and the import is replaced
         # from .model import StoryGAN, STAGE1_D_IMG, STAGE1_D_STY_V2, StoryMartGAN
         # if cfg.CASCADE_MODEL:
@@ -103,16 +114,12 @@ class GANTrainer(object):
 
         # Moda: define the training parameters
 
-        # Moda: import model classes and new classes
-        from model import CreateModel, StoryGAN, STAGE1_D_IMG, STAGE1_D_SEG, STAGE1_D_STY_V2, STAGE1_D_SEG
-        from model import NoMartNoCascade, MartNoCascade, NoMartCascade, MartCascade
-
         # Moda: model creation is replaced by the new function and flags
         # if self.use_mart:
         #     netG = StoryMartGAN(self.cfg, self.video_len)
         # else:
         #     netG = StoryGAN(self.cfg, self.video_len)
-        netG = CreateModel(Mart, Cascade)
+        netG = CreateModel(self.use_mart, self.use_segment, self.cfg, self.video_len)
 
         netG.apply(weights_init)
         print(netG)
@@ -146,7 +153,7 @@ class GANTrainer(object):
         # Moda
         netD_se = None
         if self.use_segment:
-            netD_se = STAGE1_D_SEG() # v2
+            netD_se = STAGE1_D_SEG(self.cfg) # v2 # Moda-fix: add argument
             netD_se.apply(weights_init)
             print(netD_se)
 
@@ -157,7 +164,7 @@ class GANTrainer(object):
             netG.load_state_dict(state_dict)
             print('Load from: ', self.cfg.NET_G)
 
-        if self.cfg.CUDA:
+        if self.cfg.CUDA and self.cuda_is_available: # Moda-fix: add cuda condition
             netG.cuda()
             if self.use_image_disc:
                 netD_im.cuda()
@@ -204,7 +211,8 @@ class GANTrainer(object):
                 transforms.Normalize([0.485, 0.456, 0.406], [0.229, 0.224, 0.225])
             ])
 
-            checkpoint = torch.load(os.path.join(self.cfg.MART.CKPT_PATH))
+            checkpoint = torch.load(os.path.join(self.cfg.MART.CKPT_PATH),\
+                                                map_location=lambda storage, loc: storage) # Moda-fix: add map_location
             model_config = checkpoint["model_cfg"]
             model = RecursiveTransformer(model_config)
             model.load_state_dict(checkpoint["model"])
@@ -216,7 +224,7 @@ class GANTrainer(object):
             for p in model.parameters():
                 p.requires_grad = False
 
-            if self.cfg.CUDA:
+            if self.cfg.CUDA and self.cuda_is_available: # Moda-fix: add cuda condition
                 model.cuda()
             return model, feature_extractor, transform
         else:
@@ -227,7 +235,7 @@ class GANTrainer(object):
             self.imagedataset = enumerate(self.imageloader)
         batch_idx, batch = next(self.imagedataset)
         b = batch
-        if self.cfg.CUDA:
+        if self.cfg.CUDA and self.cuda_is_available: # Moda-fix: add cuda condition
             for k, v in batch.items():
                 if k == 'text':
                     continue
@@ -284,7 +292,7 @@ class GANTrainer(object):
         im_fake_labels = Variable(torch.FloatTensor(self.imbatch_size).fill_(0))
         st_real_labels = Variable(torch.FloatTensor(self.stbatch_size).fill_(1))
         st_fake_labels = Variable(torch.FloatTensor(self.stbatch_size).fill_(0))
-        if self.cfg.CUDA:
+        if self.cfg.CUDA and self.cuda_is_available: #Moda-fix: add cuda condition
             im_real_labels, im_fake_labels = im_real_labels.cuda(), im_fake_labels.cuda()
             st_real_labels, st_fake_labels = st_real_labels.cuda(), st_fake_labels.cuda()
 
@@ -337,6 +345,9 @@ class GANTrainer(object):
 
         #save_test_samples(netG, testloader, self.test_dir)
         for epoch in range(self.max_epoch + 1):
+            # Moda-XXX
+            if epoch > 1: break
+            print(f">>> epoch ::: {epoch}/{self.max_epoch + 1}")
             l = self.ratio * (2. / (1. + np.exp(-10. * epoch)) - 1)
             start_t = time.time()
             if epoch % lr_decay_step == 0 and epoch > 0:
@@ -356,6 +367,9 @@ class GANTrainer(object):
                         param_group['lr'] = discriminator_lr
 
             for i, data in tqdm(enumerate(storyloader, 0)):
+                # Moda-XXX
+                if i > 0: break
+                print(f">>> storyloader ::: {i}/{len(storyloader)}")
                 ######################################################
                 # (1) Prepare training data
                 ######################################################
@@ -389,7 +403,7 @@ class GANTrainer(object):
                     se_real_cpu = im_batch['images_seg']
                     se_real_imgs = Variable(se_real_cpu)
 
-                if self.cfg.CUDA:
+                if self.cfg.CUDA and self.cuda_is_available: # Moda-fix: add cuda condition
                     st_real_imgs = st_real_imgs.cuda()
                     im_real_imgs = im_real_imgs.cuda()
                     st_motion_input = st_motion_input.cuda()
@@ -418,9 +432,9 @@ class GANTrainer(object):
                     netG = nn.DataParallel(netG)
 
                 if self.use_mart:
-                    st_inputs = (st_motion_input, st_content_input, st_input_ids, st_masks, st_labels)
+                    st_inputs = (st_motion_input, st_content_input, st_input_ids, st_masks, st_labels, self.use_segment)
                 else:
-                    st_inputs = (st_motion_input, st_content_input)
+                    st_inputs = (st_motion_input, st_content_input, self.use_segment)
                 #lr_st_fake, st_fake, m_mu, m_logvar, c_mu, c_logvar = \
                 #    nn.parallel.data_parallel(netG.sample_videos, st_inputs, self.gpus)
 
@@ -429,15 +443,20 @@ class GANTrainer(object):
 
                 if self.use_mart:
                     im_inputs = (im_motion_input, im_content_input, im_input_ids, im_masks, im_labels)
+                    # Moda
+                    if self.use_segment: im_inputs += (self.use_segment,)
                 else:
                     im_inputs = (im_motion_input, im_content_input)
+                    # Moda
+                    if self.use_segment: im_inputs += (self.use_segment,)
                 #lr_im_fake, im_fake, im_mu, im_logvar, cim_mu, cim_logvar = \
                 #    nn.parallel.data_parallel(netG.sample_images, im_inputs, self.gpus)
 
                 # Moda: extra return (se_fake) from sample_images
                 lr_im_fake, im_fake, im_mu, im_logvar, cim_mu, cim_logvar, se_fake = netG.sample_images(*im_inputs) # im_mu (60,489), cim_mu (60,124)
 
-                characters_mu = (st_labels.mean(1)>0).type(torch.FloatTensor).cuda() # which character exists in the full story (5 descriptions)
+                characters_mu = (st_labels.mean(1)>0).type(torch.FloatTensor) # which character exists in the full story (5 descriptions)
+                if self.cuda_is_available: characters_mu.cuda() # Moda-fix: add cuda condition
                 st_mu = torch.cat((c_mu, st_motion_input[:,:, :self.cfg.TEXT.DIMENSION].mean(1).squeeze(), characters_mu), 1)
 
                 im_mu = torch.cat((im_motion_input, cim_mu), 1)
@@ -457,6 +476,7 @@ class GANTrainer(object):
                     imgD_loss_report = {}
 
                 if self.use_story_disc:
+                    Mode = 'story'
                     netD_st.zero_grad()
                     st_errD, stD_loss_report = \
                         compute_discriminator_loss(netD_st, st_real_imgs, st_fake,
@@ -469,29 +489,30 @@ class GANTrainer(object):
                     stD_loss_report = {}
 
                 # Moda
-                if self.use_se:
+                if self.use_segment:
                     netD_se.zero_grad()
                     se_errD, seD_loss_report = \
                         compute_discriminator_loss(netD_se, se_real_imgs, se_fake,
-                                                   im_real_labels, se_fake_labels, im_labels,
-                                                   im_mu, self.gpus, mode='story')
+                                                   im_real_labels, im_fake_labels, im_labels,
+                                                   im_mu, self.gpus, mode='image')
                     se_errD.backward()
                     se_optimizerD.step()
                 else:
                     se_errD = torch.tensor(0)
                     seD_loss_report = {}
 
-
                 ############################
                 # (2) Update G network
                 ###########################
                 for g_iter in range(self.cfg.TRAIN.UPDATE_RATIO):
+                    # Moda-XXX
+                    if g_iter > 0: break
+                    print(f">>> g_iter ::: {g_iter}/{self.cfg.TRAIN.UPDATE_RATIO}")
                     netG.zero_grad()
-
                     if self.use_mart:
-                        st_inputs = (st_motion_input, st_content_input, st_input_ids, st_masks, st_labels)
+                        st_inputs = (st_motion_input, st_content_input, st_input_ids, st_masks, st_labels, self.use_segment)
                     else:
-                        st_inputs = (st_motion_input, st_content_input)
+                        st_inputs = (st_motion_input, st_content_input, self.use_segment)
                     #_, st_fake, m_mu, m_logvar, c_mu, c_logvar = \
                     #    nn.parallel.data_parallel(netG.sample_videos, st_inputs, self.gpus)
 
@@ -530,7 +551,8 @@ class GANTrainer(object):
                     #     self._logger.add_scalar('G/video_vae_loss', video_latent_loss.data, step)
                     #     self._logger.add_scalar('G/reconstruct_loss', reconstruct_loss.data, step)
 
-                    characters_mu = (st_labels.mean(1)>0).type(torch.FloatTensor).cuda()
+                    characters_mu = (st_labels.mean(1)>0).type(torch.FloatTensor)
+                    if self.cuda_is_available: characters_mu.cuda() # Moda-fix: add cuda condition
                     st_mu = torch.cat((c_mu, st_motion_input[:,:, :self.cfg.TEXT.DIMENSION].mean(1).squeeze(), characters_mu), 1)
 
                     im_mu = torch.cat((im_motion_input, cim_mu), 1)
@@ -556,7 +578,7 @@ class GANTrainer(object):
                     if self.use_segment:
                         se_errG, seG_loss_report = compute_generator_loss(netD_se, se_fake, se_real_imgs,
                                                             im_real_labels, im_labels, im_mu, self.gpus,
-                                                            mode='story')
+                                                            mode='image')
                     else:
                         se_errG = torch.tensor(0)
                         seG_loss_report = {}
@@ -566,6 +588,7 @@ class GANTrainer(object):
                     if self.cfg.STORY_DUAL:
                         st_errDual, st_videocap_loss_report = compute_dual_captioning_loss(netDual, st_fake, (st_input_ids, st_masks),
                                                                                            storyloader.dataset.vocab, self.gpus, img_ft_extractor, transform)
+                    
                     ######
                     # Sample Image Loss and Sample Video Loss
                     im_kl_loss = KL_loss(cim_mu, cim_logvar)
@@ -579,7 +602,7 @@ class GANTrainer(object):
                     # Moda : Replace the cond tree by one line
                     ## TODO: Check image_weight and segment_weight?
                     errG_total = im_errG + im_kl_loss * self.cfg.TRAIN.COEFF.KL + \
-                                self.ratio * (se_errG + st_errG + st_kl_loss * self.cfg.TRAIN.COEFF.KL)
+                                self.ratio * (se_errG*segment_weight + st_errG*image_weight + st_kl_loss * self.cfg.TRAIN.COEFF.KL)
                     # if self.use_image_disc and self.use_story_disc:
                     #     errG_total = im_errG + im_kl_loss * self.cfg.TRAIN.COEFF.KL + self.ratio * (
                     #             st_errG + st_kl_loss * self.cfg.TRAIN.COEFF.KL)
@@ -589,7 +612,7 @@ class GANTrainer(object):
                     #     errG_total = im_kl_loss * self.cfg.TRAIN.COEFF.KL + self.ratio * (st_errG + st_kl_loss * self.cfg.TRAIN.COEFF.KL)
 
                     if self.cfg.TRAIN.PERCEPTUAL_LOSS:
-                        if self.cfg.CUDA:
+                        if self.cfg.CUDA and self.cuda_is_available: # Moda-fix: add cuda condition
                             per_loss = self.perceptual_loss_net(im_fake, im_real_cpu.cuda())
                         else:
                             per_loss = self.perceptual_loss_net(im_fake, im_real_cpu)
@@ -636,9 +659,9 @@ class GANTrainer(object):
             print('--------------------------------------------------------------------------------')
 
             if epoch % self.snapshot_interval == 0:
-                save_test_samples(netG, testloader, self.test_dir, epoch, mart=self.use_mart)
+                save_test_samples(netG, testloader, self.test_dir, epoch, mart=self.use_mart, seg=self.use_segment)
             if epoch % 5 == 0:
-                save_model(netG, netD_im, netD_st, epoch, self.model_dir)
+                save_model(netG, netD_im, netD_st, netD_se, epoch, self.model_dir)
 
         with open(os.path.join(self.model_dir, 'losses.pkl'), 'wb') as f:
             pickle.dump(loss_collector, f)
@@ -649,8 +672,8 @@ class GANTrainer(object):
     def sample(self, testloader, generator_weight_path, out_dir, stage=1):
 
         if stage == 1:
-            netG, _, _, _ = self.load_network_stageI() # Moda: extra return
+            netG, _, _, _ = self.load_network_stageI(self.use_mart, self.use_segment) # Moda: extra return
         else:
             raise ValueError
         netG.load_state_dict(torch.load(generator_weight_path))
-        save_test_samples(netG, testloader, out_dir, 60, mart=self.use_mart)
+        save_test_samples(netG, testloader, out_dir, 60, mart=self.use_mart, seg=self.use_segment)

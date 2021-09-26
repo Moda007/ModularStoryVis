@@ -14,6 +14,7 @@ import torchvision.transforms as transforms
 from torch.autograd import Variable
 from tqdm import tqdm
 import sys
+import random
 
 def func_attention(query, context, gamma1): # Moda: DuCo
     """
@@ -132,10 +133,10 @@ def frame_caption_to_feature(text_input_ids, text_mask, vocab, max_v_len, max_t_
     return data
 
 def compute_dual_captioning_loss(netDual, st_fake, real_targets, vocab, gpus, feature_extractor=None, transform=None): # Moda: DuCo
-
+    
     if len(gpus) > 1:
         netDual = torch.nn.DataParallel(netDual)
-    device = torch.device("cuda" if len(gpus)>0 else "cpu")
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu") # Moda-fix
 
 
     bsz, n_channel, video_len, h, w = st_fake.size()
@@ -171,22 +172,66 @@ def compute_dual_captioning_loss(netDual, st_fake, real_targets, vocab, gpus, fe
     return errDual, {'Story Dual Loss --> ': errDual.data.item()}
 
 def compute_discriminator_loss(netD, real_imgs, fake_imgs, real_labels, fake_labels, real_catelabels, conditions, gpus, mode='image'): # Moda: Merged
+    # Moda-xxx
+    # print("\nMODE ::: ", mode)
+    # print("\nreal_imgs ::: ", real_imgs.shape)
+    # print("\nlen(real_imgs[1]) ::: ", len(real_imgs[1][0]))
+    # print("\nreal_imgs 2nd DIM ::: ", torch.index_select(real_imgs, 1, torch.tensor([0, 2])).shape)
+    # print("\nfake_imgs ::: ", fake_imgs.shape)
+    # if real_imgs.shape[1] == 1: # Moda-fix: in case of segmentation
+    #     print("\n Update Tensor Shape")
+    #     # no_repeats = 3
+    #     # axis_to_repeat = torch.index_select(real_imgs, 1, torch.tensor([0, 0]))
+    #     # tensors = torch.tensor([axis_to_repeat,axis_to_repeat, axis_to_repeat])
+    #     tensors = (real_imgs, real_imgs, real_imgs)
+    #     real_imgs = torch.stack(tensors, dim=1)
+    #     print("\nreal_imgs ::: ", real_imgs.shape)
+    #     new_shape = (real_imgs.shape[0], real_imgs.shape[1], real_imgs.shape[-2], real_imgs.shape[-1])
+    #     real_imgs = torch.reshape(real_imgs, new_shape)
+    #     # real_imgs = real_imgs.repeat(real_imgs.shape[0], no_repeats, real_imgs.shape[2], real_imgs.shape[3])
+    #     print("\nreal_imgs ::: ", real_imgs.shape)
+    # def print_V(v, v_str):
+    #     print(f"\n{v_str} ---->>>> {type(v)} :::\n", v)
+    # print_V(netD, "netD")
+    # print_V(real_imgs, "real_imgs")
+    # print_V(fake_imgs, "fake_imgs")
+    # print_V(real_labels, "real_labels")
+    # print_V(fake_labels, "fake_labels")
+    # print_V(real_catelabels, "real_catelabels")
+    # print_V(conditions, "conditions")
+    # print_V(gpus, "gpus")
+
     criterion = nn.BCELoss()
     cate_criterion =nn.MultiLabelSoftMarginLoss()
     batch_size = real_imgs.size(0)
     # cond = conditions.detach() # Moda: moved inside the next condition (else branch)
     fake = fake_imgs.detach()
 
-    real_features = nn.parallel.data_parallel(netD, (real_imgs), gpus)
-    fake_features = nn.parallel.data_parallel(netD, (fake), gpus)
+    # Moda-fix: solution for cpu
+    cuda_is_available = True if torch.cuda.is_available() else False
+    
+    real_features = real_imgs
+    fake_features = fake
+    if cuda_is_available: # Moda-fix: solution for cpu
+        real_features = nn.parallel.data_parallel(netD, (real_imgs), gpus)
+        fake_features = nn.parallel.data_parallel(netD, (fake), gpus)
+    else:
+        real_features = netD(real_imgs)
+        fake_features = netD(fake)
+
+    # real_features = nn.parallel.data_parallel(netD, (real_imgs), gpus)
+    # fake_features = nn.parallel.data_parallel(netD, (fake), gpus)
 
     if conditions is None: # Moda: this branch comes from CP-CSV. with additional "loss_report" to match DuCo
         # For Text Cycle Discriminator
         # real_features = nn.parallel.data_parallel(netD, (real_imgs), gpus)
         # fake_features = nn.parallel.data_parallel(netD, (fake), gpus)
-        real_logits = nn.parallel.data_parallel(netD.get_uncond_logits, (real_features), gpus)
-        fake_logits = nn.parallel.data_parallel(netD.get_uncond_logits, (fake_features), gpus)
-
+        if cuda_is_available: # Moda-fix: solution for cpu
+            real_logits = nn.parallel.data_parallel(netD.get_uncond_logits, (real_features), gpus)
+            fake_logits = nn.parallel.data_parallel(netD.get_uncond_logits, (fake_features), gpus)
+        else:
+            real_logits = netD.get_uncond_logits(real_features)
+            fake_logits = netD.get_uncond_logits(fake_features)
         errD_real = criterion(real_logits, real_labels)
         errD_fake = criterion(fake_logits, fake_labels)
         errD = errD_real + errD_fake
@@ -196,31 +241,59 @@ def compute_discriminator_loss(netD, real_imgs, fake_imgs, real_labels, fake_lab
         }
         return errD, loss_report
     else:
+        cond = conditions.detach()
         if mode == 'story':
             real_features_st = real_features
-            fake_features = fake_features.mean(1).squeeze()
             real_features = real_features.mean(1).squeeze()
+            # Moda-XXX
+            # print("\nreal_features (mode == 'story') ::: ", real_features.shape)
+            fake_features = fake_features.mean(1).squeeze()
 
-        # real pairs
-        inputs = (real_features, cond)
-        real_logits = nn.parallel.data_parallel(netD.get_cond_logits, inputs, gpus)
+        # Moda-fix: solution for cpu
+        if cuda_is_available:
+            # real pairs
+            inputs = (real_features, cond)
+            real_logits = nn.parallel.data_parallel(netD.get_cond_logits, inputs, gpus)
+            # wrong pairs
+            inputs = (real_features[:(batch_size-1)], cond[1:])
+            wrong_logits = nn.parallel.data_parallel(netD.get_cond_logits, inputs, gpus)
+            # fake pairs
+            inputs = (fake_features, cond)
+            fake_logits = nn.parallel.data_parallel(netD.get_cond_logits, inputs, gpus)
+        else:
+            # real pairs
+            #Moda-xxx
+            # print("\nreal_features ::: ", real_features.shape) # , len(real_features.shape), real_features.shape[0], real_features.shape[1], real_features.shape[2])
+            # print("\ncond ::: ", cond.shape)
+            # print("\n ==================")
+            real_logits = netD.get_cond_logits(real_features, cond)
+            # wrong pairs
+            wrong_logits = netD.get_cond_logits(real_features[:(batch_size-1)], cond[1:])
+            # fake pairs
+            fake_logits = netD.get_cond_logits(fake_features, cond)
         errD_real = criterion(real_logits, real_labels)
-        # wrong pairs
-        inputs = (real_features[:(batch_size-1)], cond[1:])
-        wrong_logits = nn.parallel.data_parallel(netD.get_cond_logits, inputs, gpus)
         errD_wrong = criterion(wrong_logits, fake_labels[1:])
-        # fake pairs
-        inputs = (fake_features, cond)
-        fake_logits = nn.parallel.data_parallel(netD.get_cond_logits, inputs, gpus)
         errD_fake = criterion(fake_logits, fake_labels)
+        # # real pairs
+        # inputs = (real_features, cond)
+        # real_logits = nn.parallel.data_parallel(netD.get_cond_logits, inputs, gpus)
+        # errD_real = criterion(real_logits, real_labels)
+        # # wrong pairs
+        # inputs = (real_features[:(batch_size-1)], cond[1:])
+        # wrong_logits = nn.parallel.data_parallel(netD.get_cond_logits, inputs, gpus)
+        # errD_wrong = criterion(wrong_logits, fake_labels[1:])
+        # # fake pairs
+        # inputs = (fake_features, cond)
+        # fake_logits = nn.parallel.data_parallel(netD.get_cond_logits, inputs, gpus)
+        # errD_fake = criterion(fake_logits, fake_labels)
 
         if netD.get_uncond_logits is not None:
-            real_logits = \
-                nn.parallel.data_parallel(netD.get_uncond_logits,
-                                          (real_features), gpus)
-            fake_logits = \
-                nn.parallel.data_parallel(netD.get_uncond_logits,
-                                          (fake_features), gpus)
+            if cuda_is_available: # Moda-fix: solution for cpu
+                real_logits = nn.parallel.data_parallel(netD.get_uncond_logits, (real_features), gpus)
+                fake_logits = nn.parallel.data_parallel(netD.get_uncond_logits, (fake_features), gpus)
+            else:
+                real_logits = netD.get_uncond_logits(real_features)
+                fake_logits = netD.get_uncond_logits(fake_features)
             uncond_errD_real = criterion(real_logits, real_labels)
             uncond_errD_fake = criterion(fake_logits, fake_labels)
             #
@@ -239,7 +312,10 @@ def compute_discriminator_loss(netD, real_imgs, fake_imgs, real_labels, fake_lab
 
         if netD.cate_classify is not None:
             # print('Real features shape', real_features.shape)
-            cate_logits = nn.parallel.data_parallel(netD.cate_classify, real_features, gpus)
+            if cuda_is_available: # Moda-fix: solution for cpu
+                cate_logits = nn.parallel.data_parallel(netD.cate_classify, real_features, gpus)
+            else:
+                cate_logits = netD.cate_classify(real_features)
             # print('Categorical logits shape', cate_logits.shape)
             cate_logits = cate_logits.squeeze()
             errD = errD + 1.0 * cate_criterion(cate_logits, real_catelabels)
@@ -252,7 +328,10 @@ def compute_discriminator_loss(netD, real_imgs, fake_imgs, real_labels, fake_lab
             B = fake_imgs.shape[0]
             shuffle_story_input, order_labels = create_random_shuffle(real_imgs)
             # fake_labels = torch.zeros(B)
-            order_logits = nn.parallel.data_parallel(netD.seq_consisten_model, shuffle_story_input, gpus)
+            if cuda_is_available: # Moda-fix: solution for cpu
+                order_logits = nn.parallel.data_parallel(netD.seq_consisten_model, shuffle_story_input, gpus)
+            else:
+                order_logits = netD.seq_consisten_model(shuffle_story_input)
             order_labels = order_labels.cuda()
             real_consistent_loss = bce_loss(order_logits, order_labels.unsqueeze(-1) )
             # fake_consistent_loss = criterion(fake_labels, fake_imgs)
@@ -266,12 +345,23 @@ def compute_discriminator_loss(netD, real_imgs, fake_imgs, real_labels, fake_lab
 def compute_generator_loss(netD, fake_imgs, real_imgs, real_labels, fake_catelabels, conditions, gpus, mode='image'): # Moda: Merged (with extra parameter)
     criterion = nn.BCELoss()
     cate_criterion =nn.MultiLabelSoftMarginLoss()
+
+    # Moda-fix: solution for cpu
+    cuda_is_available = True if torch.cuda.is_available() else False
+
     # cond = conditions.detach() # Moda: moved inside the next condition (else branch)
-    fake_features = nn.parallel.data_parallel(netD, (fake_imgs), gpus)
+    if cuda_is_available: # Moda-fix: solution for cpu
+        fake_features = nn.parallel.data_parallel(netD, (fake_imgs), gpus)
+    else:
+        fake_features = netD(fake_imgs)
 
     if conditions is None: # Moda: this branch comes from CP-CSV. with additional "loss_report" to match DuCo
-        fake_features = nn.parallel.data_parallel(netD, (fake_imgs), gpus)
-        fake_logits = nn.parallel.data_parallel(netD.get_uncond_logits, (fake_features), gpus)
+        if cuda_is_available: # Moda-fix: solution for cpu
+            fake_features = nn.parallel.data_parallel(netD, (fake_imgs), gpus)
+            fake_logits = nn.parallel.data_parallel(netD.get_uncond_logits, (fake_features), gpus)
+        else:
+            fake_features = netD(fake_imgs)
+            fake_logits = netD.get_uncond_logits(fake_features)
         errD_fake = criterion(fake_logits, real_labels)
         loss_report = { # Addition to the branch from CP-CSV, to match with DuCo
             mode + 'Fake/Real Discriminator Loss (Fake pairs) --> ': errD_fake.data.item(),
@@ -282,13 +372,17 @@ def compute_generator_loss(netD, fake_imgs, real_imgs, real_labels, fake_catelab
             fake_features_st = fake_features
             fake_features = torch.mean(fake_features, dim=1).squeeze()
         # fake pairs
-        inputs = (fake_features, cond)
-        fake_logits = nn.parallel.data_parallel(netD.get_cond_logits, inputs, gpus)
+        inputs = (fake_features, conditions)
+        if cuda_is_available: # Moda-fix: solution for cpu
+            fake_logits = nn.parallel.data_parallel(netD.get_cond_logits, inputs, gpus)
+        else:
+            fake_logits = netD.get_cond_logits(fake_features, conditions)
         errD_fake = criterion(fake_logits, real_labels)
         if netD.get_uncond_logits is not None:
-            fake_logits = \
-                nn.parallel.data_parallel(netD.get_uncond_logits,
-                                          (fake_features), gpus)
+            if cuda_is_available: # Moda-fix: solution for cpu
+                fake_logits = nn.parallel.data_parallel(netD.get_uncond_logits, (fake_features), gpus)
+            else:
+                fake_logits = netD.get_uncond_logits(fake_features)
             uncond_errD_fake = criterion(fake_logits, real_labels)
             errD_fake += uncond_errD_fake
 
@@ -298,7 +392,10 @@ def compute_generator_loss(netD, fake_imgs, real_imgs, real_labels, fake_catelab
 
         if netD.cate_classify is not None:
             # print('Fake features shape', fake_features.shape)
-            cate_logits = nn.parallel.data_parallel(netD.cate_classify, fake_features, gpus)
+            if cuda_is_available: # Moda-fix: solution for cpu
+                cate_logits = nn.parallel.data_parallel(netD.cate_classify, fake_features, gpus)
+            else:
+                cate_logits = netD.cate_classify(fake_features)
             cate_logits = cate_logits.mean(dim=-1).mean(dim=-1) # Moda: only in DuCo
             cate_logits = cate_logits.squeeze()
             # print(cate_logits.shape, fake_catelabels.shape)
@@ -317,8 +414,12 @@ def compute_generator_loss(netD, fake_imgs, real_imgs, real_labels, fake_catelab
             # fake_consistent_loss = bce_loss(order_logits, fake_labels.unsqueeze(-1) )
             # consistency_loss = fake_consistent_loss
             # errD_fake += 1.0 * consistency_loss
-            real_logits = nn.parallel.data_parallel(netD.seq_consisten_model, real_imgs, gpus)
-            fake_logits = nn.parallel.data_parallel(netD.seq_consisten_model, fake_imgs, gpus)
+            if cuda_is_available: # Moda-fix: solution for cpu
+                real_logits = nn.parallel.data_parallel(netD.seq_consisten_model, real_imgs, gpus)
+                fake_logits = nn.parallel.data_parallel(netD.seq_consisten_model, fake_imgs, gpus)
+            else:
+                real_logits = netD.seq_consisten_model(real_imgs)
+                fake_logits = netD.seq_consisten_model(fake_imgs)
             consistency_loss = mse_loss(fake_logits, real_logits.detach())
             errD_fake += cfg.CONSISTENCY_RATIO * consistency_loss
             consistency_loss_val = consistency_loss.item()
@@ -464,7 +565,7 @@ def mkdir_p(path): # Moda: almost match
         else:
             raise
 
-def save_test_samples(netG, dataloader, save_path, epoch, mart=False): # Moda: no match, keep DuCo
+def save_test_samples(netG, dataloader, save_path, epoch, mart=False, seg=False): # Moda: no match, keep DuCo
     print('Generating Test Samples...')
     save_images = []
     save_labels = []
@@ -473,6 +574,9 @@ def save_test_samples(netG, dataloader, save_path, epoch, mart=False): # Moda: n
 
     with torch.no_grad():
         for i, batch in tqdm(enumerate(dataloader, 0)):
+            # Moda-XXX
+            # if i > 1: break
+            # print(f">>> dataloader ::: {i}/{len(dataloader)}")
             #print('Processing at ' + str(i))
             real_cpu = batch['images']
             motion_input = batch['description'][:, :, :cfg.TEXT.DIMENSION]
@@ -484,7 +588,7 @@ def save_test_samples(netG, dataloader, save_path, epoch, mart=False): # Moda: n
             if mart:
                 st_input_ids = Variable(batch['input_ids'])
                 st_masks = Variable(batch['masks'])
-            if cfg.CUDA:
+            if cfg.CUDA and torch.cuda.is_available():
                 real_imgs = real_imgs.cuda()
                 motion_input = motion_input.cuda()
                 content_input = content_input.cuda()
@@ -495,9 +599,9 @@ def save_test_samples(netG, dataloader, save_path, epoch, mart=False): # Moda: n
             motion_input = torch.cat((motion_input, catelabel), 2)
             #content_input = torch.cat((content_input, catelabel), 2)
             if mart:
-                _, fake, _, _, _, _ = netG.sample_videos(motion_input, content_input, st_input_ids, st_masks, catelabel)
+                _, fake, _, _, _, _, _ = netG.sample_videos(motion_input, content_input, st_input_ids, st_masks, catelabel, seg)
             else:
-                _, fake, _,_,_,_ = netG.sample_videos(motion_input, content_input)
+                _, fake, _, _, _, _, _ = netG.sample_videos(motion_input, content_input, seg)
             save_story_results(real_cpu, fake, batch['text'], i, save_path, epoch, upscale=True if fake.shape[-1]==128 else False)
             save_images.append(fake.cpu().data.numpy())
             save_labels.append(catelabel.cpu().data.numpy())
@@ -640,3 +744,33 @@ def words_loss(img_features, words_emb, labels, cap_lens, batch_size):
     else:
         loss0, loss1 = None, None
     return loss0, loss1, att_maps
+
+#############################
+def check_is_order(sequence): # Moda: this function comes from CP-CSV.
+    return (np.diff(sequence)>=0).all()
+
+def create_random_shuffle(stories,  random_rate=0.5): # Moda: this function comes from CP-CSV.
+    o3n_data, labels = [], []
+    device = stories.device
+    stories = stories.cpu()
+    story_size = len(stories)
+    for idx, result in enumerate(stories):
+        video_len = result.shape[1]
+        label = 1 if random_rate > np.random.random() else 0
+        if label == 0:
+            o3n_data.append(result.clone())
+        else:
+            random_sequence = random.sample(range(video_len), video_len)
+            while (check_is_order(random_sequence)): # make sure not sorted
+                np.random.shuffle(random_sequence)
+            shuffled_story = result[:, list(random_sequence), :, :].clone()
+            story_size_idx = random.randint(0, story_size-1)
+            if story_size_idx != idx:
+                story_mix = random.sample(range(video_len), 1)
+                shuffled_story[:, story_mix, :, : ] = stories[story_size_idx, :, story_mix, :, :].clone()
+            o3n_data.append(shuffled_story)
+        labels.append(label)
+
+    order_labels = Variable(torch.from_numpy(np.array(labels)).float(), requires_grad=True).detach()
+    shuffle_imgs = Variable(torch.stack(o3n_data, 0), requires_grad=True)
+    return shuffle_imgs.to(device), order_labels.to(device)

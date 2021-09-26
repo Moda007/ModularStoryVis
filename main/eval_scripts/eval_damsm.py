@@ -418,6 +418,16 @@ def video_transform(video, image_transform):
     vid = torch.stack(vid).permute(1, 0, 2, 3)
     return vid
 
+def partial(func, /, *args, **keywords): # Moda-fix: replace functools.partial
+    def newfunc(*fargs, **fkeywords):
+        newkeywords = {**keywords, **fkeywords}
+        return func(*args, *fargs, **newkeywords)
+    newfunc.func = func
+    newfunc.args = args
+    newfunc.keywords = keywords
+    return newfunc
+
+
 if __name__ == "__main__":
 
     args = parse_args()
@@ -469,7 +479,8 @@ if __name__ == "__main__":
         transforms.Normalize([0.485, 0.456, 0.406], [0.229, 0.224, 0.225])
     ])
 
-    video_transform_val = functools.partial(video_transform, image_transform=transform_val)
+    video_transform_val = partial(video_transform, image_transform=transform_val) # Moda-fix: replace functools.partial
+    # video_transform_val = functools.partial(video_transform, image_transform=transform_val)
 
     counter = np.load(os.path.join(dir_path, 'frames_counter.npy'), allow_pickle=True).item()
     print("----------------------------------------------------------------------------------")

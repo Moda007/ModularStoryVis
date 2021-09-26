@@ -595,8 +595,19 @@ if __name__ == "__main__":
         transforms.Normalize([0.485, 0.456, 0.406], [0.229, 0.224, 0.225])
     ])
 
-    video_transform_train = functools.partial(video_transform, image_transform=transform_train)
-    video_transform_val = functools.partial(video_transform, image_transform=transform_val)
+    def partial(func, /, *args, **keywords): # Moda-fix: replace functools.partial
+        def newfunc(*fargs, **fkeywords):
+            newkeywords = {**keywords, **fkeywords}
+            return func(*args, *fargs, **newkeywords)
+        newfunc.func = func
+        newfunc.args = args
+        newfunc.keywords = keywords
+        return newfunc
+
+    video_transform_train = partial(video_transform, image_transform=transform_train) # Moda-fix: replace functools.partial
+    video_transform_val = partial(video_transform, image_transform=transform_val) # Moda-fix: replace functools.partial
+    # video_transform_train = functools.partial(video_transform, image_transform=transform_train)
+    # video_transform_val = functools.partial(video_transform, image_transform=transform_val)
 
     counter = np.load(os.path.join(dir_path, 'frames_counter.npy'), allow_pickle=True).item()
     print("----------------------------------------------------------------------------------")

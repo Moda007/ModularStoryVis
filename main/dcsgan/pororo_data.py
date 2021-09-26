@@ -142,16 +142,23 @@ class VideoFolderDataset(torch.utils.data.Dataset): # Moda: match, almost the sa
         self.total_frames = 0
         self.images = []
         self.labels = np.load(os.path.join(folder, 'labels.npy'), allow_pickle=True, encoding='latin1').item()
-        if cache is not None and os.path.exists(cache + 'img_cache' + str(min_len) + '.npy') and os.path.exists(cache + 'following_cache' + str(min_len) +  '.npy'):
-            self.images = np.load(cache + 'img_cache' + str(min_len) + '.npy', encoding='latin1')
-            self.followings = np.load(cache + 'following_cache' + str(min_len) + '.npy')
+        path_img_cache = os.path.join(cache, "img_cache{}.npy".format(min_len))
+        path_follow_cache = os.path.join(cache, "following_cache{}.npy".format(min_len))
+        if cache is not None and os.path.exists(path_img_cache) and os.path.exists(path_follow_cache):
+            self.images      = np.load(path_img_cache,       allow_pickle=True, encoding='latin1') # Moda-fix: allow pickle
+            self.followings  = np.load(path_follow_cache,    allow_pickle=True, encoding='latin1') # Moda-fix: allow pickle
         else:
+            # Moda:
+            #TODO: raise error if Segmentation imags are available before, need to be moved after the cache files are generated
             for idx, (im, _) in enumerate(
                     tqdm(dataset, desc="Counting total number of frames")):
                 img_path, _ = dataset.imgs[idx]
                 v_name = img_path.replace(folder,'') # get the video name
+                v_name = v_name.replace('\\', '/')[1:] # Moda-Fix: replace slash and remove the 1st one (to avoid keyerror)
                 id = v_name.split('/')[-1]
-                id = int(id.replace('.png', ''))
+                id = id.split('_')[-1] # Moda-fix: solve "img_segmentation" dir ids
+                id = id.replace('.png', '')
+                id = int(id)
                 v_name = re.sub(r"[0-9]+.png",'', v_name)
                 if id > counter[v_name] - min_len:
                     continue
@@ -160,6 +167,8 @@ class VideoFolderDataset(torch.utils.data.Dataset): # Moda: match, almost the sa
                     following_imgs.append(v_name + str(id+i+1) + '.png')
                 self.images.append(img_path.replace(folder, ''))
                 self.followings.append(following_imgs)
+            self.images = np.array(self.images) # Moda-fix: convert to np array, to be saved and indexed by an array
+            self.followings = np.array(self.followings) # Moda-fix: convert to np array, to be saved and indexed by an array
             np.save(os.path.join(folder, 'img_cache' + str(min_len) + '.npy'), self.images)
             np.save(os.path.join(folder, 'following_cache' + str(min_len) + '.npy'), self.followings)
 
@@ -173,11 +182,9 @@ class VideoFolderDataset(torch.utils.data.Dataset): # Moda: match, almost the sa
             orders = test_id
         else:
             raise ValueError
-
         orders = np.array(orders).astype('int32')
         self.images = self.images[orders]
         self.followings = self.followings[orders]
-        print("Total number of clips {}".format(len(self.images)))
 
         self.image_arrays = {}
         if load_images:
@@ -188,7 +195,8 @@ class VideoFolderDataset(torch.utils.data.Dataset): # Moda: match, almost the sa
 
     def sample_image(self, im):
         shorter, longer = min(im.size[0], im.size[1]), max(im.size[0], im.size[1])
-        video_len = int(longer/shorter)
+        video_len = longer // shorter
+        # video_len = int(longer/shorter)
         se = np.random.randint(0, video_len, 1)[0]
         #print(se*shorter, shorter, (se+1)*shorter)
         return im.crop((0, se * shorter, shorter, (se+1)*shorter)), se
@@ -206,10 +214,10 @@ class StoryDataset(torch.utils.data.Dataset): # Moda: match, almost the same as 
     def __init__(self, dataset, textvec, transform, return_caption=False, out_dir=None):
         self.dir_path = dataset.dir_path
         self.dataset = dataset
-        self.descriptions = np.load(textvec + 'descriptions_vec.npy', allow_pickle=True, encoding='latin1').item()
-        self.attributes = np.load(textvec + 'descriptions_attr.npy', allow_pickle=True, encoding='latin1').item()
-        self.subtitles = np.load(textvec + 'subtitles_vec.npy', allow_pickle=True, encoding='latin1').item()
-        self.descriptions_original = np.load(textvec + 'descriptions.npy', allow_pickle=True, encoding='latin1').item()
+        self.descriptions = np.load(os.path.join(textvec, 'descriptions_vec.npy'), allow_pickle=True, encoding='latin1').item() # Moda-fix: join path
+        self.attributes = np.load(os.path.join(textvec, 'descriptions_attr.npy'), allow_pickle=True, encoding='latin1').item() # Moda-fix: join path
+        self.subtitles = np.load(os.path.join(textvec, 'subtitles_vec.npy'), allow_pickle=True, encoding='latin1').item() # Moda-fix: join path
+        self.descriptions_original = np.load(os.path.join(textvec, 'descriptions.npy'), allow_pickle=True, encoding='latin1').item() # Moda-fix: join path
         self.transforms = transform
         self.labels = dataset.labels
         self.return_caption = return_caption
@@ -285,15 +293,18 @@ class StoryDataset(torch.utils.data.Dataset): # Moda: match, almost the same as 
         masks= []
         im_sample_idxs = []
         for idx, v in enumerate(lists):
-            img_id = str(v).replace('.png','')[2:-1]
-            path = self.dir_path + img_id + '.png'
+            # Moda:fix
+            # img_id = str(v).replace('.png','')[2:-1]
+            # im_path = self.dir_path + img_id + '.png'
+            img_id = str(v).strip('\\').replace('.png','').replace('\\', '/')
+            im_path =  os.path.join(self.dir_path, img_id + '.png')
             if self.dataset.image_arrays != {}:
-                im = self.dataset.image_arrays[path]
+                im = self.dataset.image_arrays[im_path]
             else:
                 if self.out_dir:
                     im = PIL.Image.open(os.path.join(self.out_dir, 'img-%s-%s.png' % (item, idx))).convert('RGB')
                 else:
-                    im = PIL.Image.open(path)
+                    im = PIL.Image.open(im_path)
             if self.out_dir:
                 image.append(np.expand_dims(np.array(im), axis = 0))
             else:
@@ -347,15 +358,16 @@ class ImageDataset(torch.utils.data.Dataset): # Moda: match, almost the same as 
         # dataset: VideoFolderDataset
         # tectvec: a path to the npy file about textself.dir_path = dataset.dir_path
         self.dataset = dataset
+        self.dir_path = dataset.dir_path # Moda-fix: add attribute
         self.transforms = image_transform
         self.transforms_seg = segment_transform
         self.use_segment = use_segment
         self.segment_name = segment_name
         lat = 'latin1'
-        self.descriptions = np.load(textvec + 'descriptions_vec.npy', allow_pickle=True, encoding=lat).item()
-        self.attributes =  np.load(textvec + 'descriptions_attr.npy', allow_pickle=True, encoding=lat).item()
-        self.subtitles = np.load(textvec + 'subtitles_vec.npy', allow_pickle=True, encoding=lat).item()
-        self.descriptions_original = np.load(textvec + 'descriptions.npy', allow_pickle=True, encoding=lat).item()
+        self.descriptions = np.load(os.path.join(textvec, 'descriptions_vec.npy'), allow_pickle=True, encoding=lat).item() # Moda-fix: join path
+        self.attributes =  np.load(os.path.join(textvec, 'descriptions_attr.npy'), allow_pickle=True, encoding=lat).item() # Moda-fix: join path
+        self.subtitles = np.load(os.path.join(textvec, 'subtitles_vec.npy'), allow_pickle=True, encoding=lat).item() # Moda-fix: join path
+        self.descriptions_original = np.load(os.path.join(textvec, 'descriptions.npy'), allow_pickle=True, encoding=lat).item() # Moda-fix: join path
         self.labels = dataset.labels
         self.return_caption = return_caption
         if self.return_caption:
@@ -403,21 +415,25 @@ class ImageDataset(torch.utils.data.Dataset): # Moda: match, almost the same as 
                                 vocab_from_file=vocab_from_file)
 
     def __getitem__(self, item): # Moda: merged, Segmentation parts are added
-        sub_path = str(self.dataset[item][0])[2:-1]
+        sub_path = str(self.dataset[item][0])[1:] # Moda-fix
         # Moda: read segmentation image
         if self.use_segment:
-            # Moda: recheck the path
-            path = '{}/{}/{}'.format(self.dir_path, self.segment_name, '_'.join(sub_path.split('/')[-2:]) )#self.dir_path+'/''/'+'_'.join(sub_path.split('/')[-2:])
-            im = PIL.Image.open(path)
+            # Moda: recheck the path (replaced)
+            # '_'.join(sub_path.split('/')[-2:])
+            im_se_path = os.path.join(self.dir_path, self.segment_name, sub_path) # Moda: use join path
+            # im_path = '{}/{}/{}'.format(self.dir_path, self.segment_name, '_'.join(sub_path.split('/')[-2:]) )#self.dir_path+'/''/'+'_'.join(sub_path.split('/')[-2:])
+            im_se = PIL.Image.open(im_se_path)
             # v2
-            im = im.convert('L')
-            image_seg = np.array( self.dataset.sample_image(im))
+            im_se = im_se.convert('L')
+            im_se, se_idx = self.dataset.sample_image(im_se) # Moda-fix: add extra redundant return
+            image_seg = np.array(im_se)
             image_seg = self.transforms_seg(image_seg)
         # Moda: read original image
-        path = self.dir_path + sub_path
-        id = str(self.dataset[item][0]).replace('.png','')[2:-1]
-        img_id = id
-        im = PIL.Image.open(path)
+        im_path = os.path.join(self.dir_path, sub_path) # Moda: use join path
+        id = str(self.dataset[item][0]) # Moda-fix: fix slicing idxs
+        id = id.replace('\\', '/')
+        id = id.replace('.png','')[1:]
+        im = PIL.Image.open(im_path)
         image, sample_idx = self.dataset.sample_image(im)
         image = self.transforms(np.array(image))
         subs = self.subtitles[id][0]
@@ -442,7 +458,9 @@ class ImageDataset(torch.utils.data.Dataset): # Moda: match, almost the same as 
         attri_content = []
         attri_label = []
         for v in lists:
-            id =str(v).replace('.png','')[2:-1]
+            id =str(v).replace('\\', '/') # Moda-fix: fix slicing idxs
+            id = id.strip('/')
+            id = id.replace('.png','')
             se = 0
             if len(self.descriptions[id]) > 1:
                 se = np.random.randint(0,len(self.descriptions[id]),1)
@@ -518,7 +536,7 @@ class ImageClfDataset(torch.utils.data.Dataset): # Moda: Only for DuCo
 
     def sample_image(self, im):
         shorter, longer = min(im.size[0], im.size[1]), max(im.size[0], im.size[1])
-        video_len = int(longer/shorter)
+        video_len = longer // shorter
         se = np.random.randint(0,video_len, 1)[0]
         return im.crop((0, se * shorter, shorter, (se+1)*shorter))
 
@@ -610,7 +628,7 @@ class StoryImageDataset(torch.utils.data.Dataset): # Moda: Only for DuCo
 
     def sample_image(self, im):
         shorter, longer = min(im.size[0], im.size[1]), max(im.size[0], im.size[1])
-        video_len = int(longer/shorter)
+        video_len = longer // shorter
         se = np.random.randint(0,video_len, 1)[0]
         #print(se*shorter, shorter, (se+1)*shorter)
         return im.crop((0, se * shorter, shorter, (se+1)*shorter))

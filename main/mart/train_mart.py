@@ -311,7 +311,7 @@ def get_args():
     parser.add_argument("--save_model", default="model")
     parser.add_argument("--save_mode", type=str, choices=["all", "best"], default="best",
                         help="all: save models at each epoch; best: only save the best model")
-    parser.add_argument("--res_roor_dir", type=str, default='./out/')
+    parser.add_argument("--res_root_dir", type=str, default='./out/')
     parser.add_argument("--no_cuda", action="store_true", help="run on cpu")
     parser.add_argument("--seed", default=2019, type=int)
     parser.add_argument("--debug", action="store_true")

@@ -6,6 +6,8 @@ import torch.nn.functional as F
 import torch.nn.parallel
 from easydict import EasyDict as edict
 from torch.autograd import Variable
+from torch.nn.utils import spectral_norm
+from torchvision.models.video.resnet import r2plus1d_18
 
 from .miscc.config import cfg
 from .recurrent import BertEncoderWithMemory, BertEmbeddings, NonRecurTransformer
@@ -36,8 +38,10 @@ base_config = edict(
 
 if torch.cuda.is_available():
     T = torch.cuda
+    cuda_is_available = True
 else:
     T = torch
+    cuda_is_available = False
 
 def conv1x1(in_planes, out_planes, bias=False): # Moda: only for MART, used in "NEXT_STAGE_G" class
     "1x1 convolution with padding"
@@ -114,7 +118,7 @@ class CA_NET(nn.Module):
 
     def reparametrize(self, mu, logvar):
         std = logvar.mul(0.5).exp_()
-        if cfg.CUDA:
+        if cfg.CUDA and cuda_is_available: #Moda-fix: add cuda condition
             eps = torch.cuda.FloatTensor(std.size()).normal_()
         else:
             eps = torch.FloatTensor(std.size()).normal_()
@@ -249,7 +253,6 @@ class D_GET_LOGITS(nn.Module):
             # print('After pooling', h_code.shape)
         # conditioning output
         if self.bcondition and c_code is not None:
-
             # print(h_code.shape, c_code.shape)
             c_code = c_code.view(-1, self.ef_dim, 1, 1)
             c_code = c_code.repeat(1, 1, 4, 4)
@@ -374,21 +377,21 @@ class R2Plus1dStem(nn.Sequential): # Moda: from CP-CSV (NoCascade), used in "Vid
             nn.ReLU(inplace=True))
 
 # ############# Networks for stageI GAN #############
-def CreateModel(Mart=False, Cascade=False): # Mode: new function to create the target model
+def CreateModel(Mart=False, Cascade=False, cfg=None, video_len=None): # Mode: new function to create the target model
     if not Mart:
         if not Cascade:
             print("No MART No Cascade Model is created")
-            return NoMartNoCascade()
+            return NoMartNoCascade(cfg, video_len)
         else:
             print("No MART Cascade Model is created")
-            return NoMartCascade()
+            return NoMartCascade(cfg, video_len)
     else:
         if not Cascade:
             print("MART No Cascade Model is created")
-            return MartNoCascade()
+            return MartNoCascade(cfg, video_len)
         else:
             print("MART Cascade Model is created")
-            return MartCascade()
+            return MartCascade(cfg, video_len)
 
 class StoryGAN(nn.Module):
     def __init__(self, cfg, video_len):
@@ -409,6 +412,14 @@ class StoryGAN(nn.Module):
         else:
             self.mocornn = nn.GRUCell(self.motion_dim, self.content_dim) # (365,124)
             # self.recurrent = nn.GRUCell(self.noise_dim + self.motion_dim, self.motion_dim)
+        
+        # change configuration for MART models
+        ##########################
+        self.moconn = BertEncoderWithMemory(self.cfg.MART)
+        self.pooler = MartPooler(self.cfg.MART.hidden_size, self.content_dim)
+        self.embeddings = BertEmbeddings(self.cfg.MART, add_postion_embeddings=True)
+        if cfg.MART.pretrained_embeddings != '':
+            self.embeddings.set_pretrained_embedding(torch.from_numpy(torch.load(cfg.MART.pretrained_embeddings)).float(), cfg.MART.freeze_embeddings)
 
         self.video_len = video_len
         self.n_channels = 3
@@ -429,8 +440,8 @@ class StoryGAN(nn.Module):
             self.segment_size = 4*2*2*2*2 # inital size is 4, upsample 4 times = 64
             self.segment_flat_size = 3*self.segment_size**2 # 12288
         # v2
-        self.aux_size = 5 # Moda: redundant, only available in CP-CSV
-        self.fix_input = 0.1*torch.tensor(range(self.aux_size)).float().cuda() # Moda: redundant, only available in CP-CSV
+        # self.aux_size = 5 # Moda: redundant, only available in CP-CSV
+        # self.fix_input = 0.1*torch.tensor(range(self.aux_size)).float().cuda() # Moda: redundant, only available in CP-CSV
 
         self.define_module()
 
@@ -495,13 +506,13 @@ class StoryGAN(nn.Module):
         z_motion = torch.cat(z_m_t[1:], dim=1).view(-1, self.motion_dim)
         return z_motion
 
-    def motion_content_rnn(self, motion_input, content_input):
+    def motion_content_rnn(self, motion_input, content_input, dummy_param_1=None, dummy_param_2=None): # Moda: works with NoMART models (match no of param and return to MART version)
         video_len = 1 if len(motion_input.shape) == 2 else self.video_len
         if len(motion_input.shape) == 2:
             motion_input = motion_input.unsqueeze(1)
             filler_input = torch.rand(
                 (motion_input.shape[0], self.cfg.MART.max_t_len - video_len, motion_input.shape[-1]))
-            if self.cfg.CUDA:
+            if self.cfg.CUDA and cuda_is_available: # Moda-fix: add cuda condition
                 filler_input = filler_input.cuda()
             motion_input = torch.cat((motion_input, filler_input), dim=1)
             mask = torch.cat((torch.ones((motion_input.shape[0], video_len)),
@@ -509,20 +520,26 @@ class StoryGAN(nn.Module):
         else:
             mask = torch.ones((motion_input.shape[0], video_len))
 
-        if self.cfg.CUDA:
+        if self.cfg.CUDA and cuda_is_available: # Moda-fix: add cuda condition
             mask = mask.cuda()
 
         if self.cfg.USE_TRANSFORMER:
             mocornn_co = self.mocornn(self.moco_fc(motion_input), mask).view(-1, self.content_dim)
         else:
-            # Moda: this branch is CP-CSV  (NoCascade) part
+            # Moda: this branch is CP-CSV (NoCascade) part
             h_t = [self.c_net(content_input)]
             for frame_num in range(video_len):
                 h_t.append(self.mocornn(motion_input[:, frame_num, :], h_t[-1]))
             c_m_t = [h_k.view(-1, 1, self.content_dim) for h_k in h_t]
             mocornn_co = torch.cat(c_m_t[1:], dim=1).view(-1, self.content_dim)
 
-        return mocornn_co
+        return mocornn_co, None, None
+
+    def mart_forward_step(self, prev_ms, input_ids, input_masks): # Moda: for MART models
+        """single step forward in the recursive structure"""
+        embeddings = self.embeddings(input_ids)  # (N, L, D)
+        prev_ms, encoded_layer_outputs = self.moconn(prev_ms, embeddings, input_masks, output_all_encoded_layers=False)  # both outputs are list
+        return prev_ms, encoded_layer_outputs
 
 class NoMartNoCascade(StoryGAN):
     def define_module(self):
@@ -609,7 +626,7 @@ class NoMartNoCascade(StoryGAN):
         r_code, r_mu, r_logvar = self.ca_net(torch.squeeze(content_input)) ## h0
         c_mu = r_mu.repeat(self.video_len, 1).view(-1, r_mu.shape[1])
 
-        crnn_code = self.motion_content_rnn(motion_input, r_code) ## i_t = GRU(s_t)
+        crnn_code, _, _ = self.motion_content_rnn(motion_input, r_code) ## i_t = GRU(s_t) # Moda: add dummy return
 
         temp = motion_input.view(-1, motion_input.shape[2])
         m_code, m_mu, m_logvar = temp, temp, temp  # self.ca_net(temp)
@@ -695,7 +712,7 @@ class NoMartNoCascade(StoryGAN):
         # content_input = content_input.view(-1, cfg.VIDEO_LEN * content_input.shape[2])
         content_input = torch.reshape(content_input, (-1, cfg.VIDEO_LEN * content_input.shape[2]))
         c_code, c_mu, c_logvar = self.ca_net(content_input) ## h0
-        crnn_code = self.motion_content_rnn(motion_input, c_mu) ## GRU
+        crnn_code, _, _ = self.motion_content_rnn(motion_input, c_mu) ## GRU # Moda: add dummy return
         # Moda: video_len=1 is added to match the updated function with extra parameter
         zm_code = self.sample_z_motion(m_code, 1) ## Text2Gist)
         # one
@@ -994,9 +1011,9 @@ class MartNoCascade(StoryGAN):
             fake_video = fake_video.permute(0, 2, 1, 3, 4)
 
             if seg==True:
-                return None, fake_video,  m_mu, m_logvar, r_mu, r_logvar, segm_video # m_mu(60,365), m_logvar(60,365), r_mu(12,124), r_logvar(12,124)
+                return None, fake_video, m_mu, m_logvar, r_mu, r_logvar, segm_video # m_mu(60,365), m_logvar(60,365), r_mu(12,124), r_logvar(12,124)
             else:
-                return None, fake_video,  m_mu, m_logvar, r_mu, r_logvar, None # m_mu(60,365), m_logvar(60,365), r_mu(12,124), r_logvar(12,124)
+                return None, fake_video, m_mu, m_logvar, r_mu, r_logvar, None # m_mu(60,365), m_logvar(60,365), r_mu(12,124), r_logvar(12,124)
         else:
             h_code = self.upsample1(zmc_img) # h_code: batch_size*video_len, 1024, 8, 8 *
             h_code = self.upsample2(h_code)  # h_code: batch_size*video_len, 512, 16, 16 *
@@ -1134,6 +1151,40 @@ class MartNoCascade(StoryGAN):
                 # state size 3 x 64 x 64
                 fake_img = self.img(h_code)
             return None, fake_img, m_mu, m_logvar, c_mu, c_logvar, None
+    
+    def motion_content_rnn(self, word_input_ids_list, input_masks_list, c_code, labels, return_memory=False): # Moda: over write NoMART method
+        """
+        Args:
+            input_ids_list: [(N, L)] * step_size
+            input_masks_list: [(N, L)] * step_size with 1 indicates valid bits
+                will not be used when return_memory is True, thus can be None in this case
+            return_memory: bool,
+        Returns:
+        """
+        # [(N, M, D)] * num_hidden_layers, initialized internally
+
+        c_code = self.c_net(c_code)
+
+        memory_list = []
+        memory_list.append([c_code.unsqueeze(1).repeat(1, self.cfg.MART.n_memory_cells, 1), c_code.unsqueeze(1).repeat(1, self.cfg.MART.n_memory_cells, 1)])
+        video_len = word_input_ids_list.shape[1]
+
+        encoded_outputs_list = []  # [(N, L, D)] * step_size
+        for idx in range(video_len):
+            ms, encoded_layer_outputs = self.mart_forward_step(memory_list[-1],
+                                                               word_input_ids_list[:, idx, :],
+                                                               input_masks_list[:, idx, :])
+
+            memory_list.append(ms)
+            encoded_outputs_list.append(encoded_layer_outputs[-1])
+
+        c_m_t = [self.pooler(h_k, input_masks_list[:, idx, :]).unsqueeze(1) for idx, h_k in enumerate(encoded_outputs_list)]
+        mocornn_co = self.mart_fc(torch.cat((torch.cat(c_m_t, dim=1), labels), dim=-1).view(-1, self.content_dim + self.cfg.LABEL_NUM))
+
+        if return_memory:  # used to analyze memory
+            return mocornn_co, encoded_outputs_list, memory_list
+        else:  # normal training/evaluation mode
+            return mocornn_co, encoded_outputs_list, None
 
 class NoMartCascade(StoryGAN):
     def define_module(self):
@@ -1230,7 +1281,7 @@ class NoMartCascade(StoryGAN):
         r_code, r_mu, r_logvar = self.ca_net(torch.squeeze(content_input)) ## h0
         c_mu = r_mu.repeat(self.video_len, 1).view(-1, r_mu.shape[1])
 
-        crnn_code = self.motion_content_rnn(motion_input, r_code) ## i_t = GRU(s_t)
+        crnn_code, _, _ = self.motion_content_rnn(motion_input, r_code) ## i_t = GRU(s_t) # Moda: add dummy return
 
         temp = motion_input.view(-1, motion_input.shape[2])
         m_code, m_mu, m_logvar = temp, temp, temp  # self.ca_net(temp)
@@ -1306,10 +1357,10 @@ class NoMartCascade(StoryGAN):
 
             if seg==True:
                 return ((zmc_seg, h_seg1, h_seg2, h_seg3), (g_seg1, g_seg2, g_seg3, g_seg4)), \
-                    fake_video,  m_mu, m_logvar, r_mu, r_logvar, segm_video # m_mu(60,365), m_logvar(60,365), r_mu(12,124), r_logvar(12,124)
+                    fake_video, m_mu, m_logvar, r_mu, r_logvar, segm_video # m_mu(60,365), m_logvar(60,365), r_mu(12,124), r_logvar(12,124)
             else:
                 return ((zmc_seg, h_seg1, h_seg2, h_seg3), (g_seg1, g_seg2, g_seg3, g_seg4)), \
-                    fake_video,  m_mu, m_logvar, r_mu, r_logvar, None # m_mu(60,365), m_logvar(60,365), r_mu(12,124), r_logvar(12,124)
+                    fake_video, m_mu, m_logvar, r_mu, r_logvar, None # m_mu(60,365), m_logvar(60,365), r_mu(12,124), r_logvar(12,124)
         else:
             h_code = self.upsample1(zmc_img) # h_code: batch_size*video_len, 1024, 8, 8 *
             h_code = self.upsample2(h_code)  # h_code: batch_size*video_len, 512, 16, 16 *
@@ -1320,7 +1371,7 @@ class NoMartCascade(StoryGAN):
             fake_video = h.view( int(h.size(0)/self.video_len), self.video_len, self.n_channels, h.size(3), h.size(3)) # 12, 5, 3, 64, 64
             fake_video = fake_video.permute(0, 2, 1, 3, 4) # 12, 3, 5, 64, 64
             #pdb.set_trace()
-            return None, fake_video,  m_mu, m_logvar, r_mu, r_logvar, None # m_mu(60,365), m_logvar(60,365), r_mu(12,124), r_logvar(12,124)
+            return None, fake_video, m_mu, m_logvar, r_mu, r_logvar, None # m_mu(60,365), m_logvar(60,365), r_mu(12,124), r_logvar(12,124)
 
     def sample_images(self, motion_input, content_input, seg=False): # Moda: Seg flag is added, also extra return
         m_code, m_mu, m_logvar = motion_input, motion_input, motion_input  # self.ca_net(motion_input)
@@ -1328,7 +1379,7 @@ class NoMartCascade(StoryGAN):
         # content_input = content_input.view(-1, cfg.VIDEO_LEN * content_input.shape[2])
         content_input = torch.reshape(content_input, (-1, cfg.VIDEO_LEN * content_input.shape[2]))
         c_code, c_mu, c_logvar = self.ca_net(content_input) ## h0
-        crnn_code = self.motion_content_rnn(motion_input, c_mu) ## GRU
+        crnn_code, _, _ = self.motion_content_rnn(motion_input, c_mu) ## GRU # Moda: add dummy return
         # Moda: video_len=1 is added to match the updated function with extra parameter
         zm_code = self.sample_z_motion(m_code, 1) ## Text2Gist)
         # one
@@ -1509,7 +1560,7 @@ class MartCascade(StoryGAN):
             self.downsample3_seg = downBlock( ngf_seg // 4, ngf_seg // 2 )
             self.downsample4_seg = downBlock( ngf_seg // 2, ngf_seg )
 
-		self.m_net = nn.Sequential(
+        self.m_net = nn.Sequential(
             nn.Linear(self.motion_dim, self.motion_dim),
             nn.BatchNorm1d(self.motion_dim))
 
@@ -1595,16 +1646,18 @@ class MartCascade(StoryGAN):
             h_seg2 = self.upsample2_seg(h_seg1) #;print(h_seg2.shape)
             h_seg3 = self.upsample3_seg(h_seg2) #;print(h_seg3.shape)
 
-			if self.cfg.TWO_STG: # Moda: Segmentation MART branch
-				## TODO: make sure next_g & next_img are applicable for segmentation also
-                r_code = r_code.unsqueeze(1).repeat(1, self.video_len, 1).view(-1, r_code.shape[-1])
-				seq_len, word_emb_dim = word_embs[0].shape[-2], word_embs[0].shape[-1]
-				h_seg2, _ = self.next_g(h_seg, r_code, torch.stack(word_embs).transpose(1, 0).reshape(-1, seq_len, word_emb_dim).transpose(-2, -1),
-                                         caption_input_masks.view(-1, caption_input_masks.shape[-1]))
-                segm_video = self.next_img(h_seg2)
-			else:
-				h_seg4 = self.upsample4_seg(h_seg3) #;print(h_seg4.shape)
-				segm_video = self.img_seg(h_seg4)
+            # if self.cfg.TWO_STG: # Moda: Segmentation MART branch (Commented for now)
+            #     ## TODO: make sure next_g & next_img are applicable for segmentation also
+            #     r_code = r_code.unsqueeze(1).repeat(1, self.video_len, 1).view(-1, r_code.shape[-1])
+            #     seq_len, word_emb_dim = word_embs[0].shape[-2], word_embs[0].shape[-1]
+            #     h_seg4, _ = self.next_g(h_seg3, r_code, torch.stack(word_embs).transpose(1, 0).reshape(-1, seq_len, word_emb_dim).transpose(-2, -1),
+            #                             caption_input_masks.view(-1, caption_input_masks.shape[-1]))
+            #     segm_video = self.next_img(h_seg4)
+            # else:
+            #     h_seg4 = self.upsample4_seg(h_seg3) #;print(h_seg4.shape)
+            #     segm_video = self.img_seg(h_seg4)
+            h_seg4 = self.upsample4_seg(h_seg3) # Moda: upper cond is commented!
+            segm_video = self.img_seg(h_seg4)
 
 			# Moda: cont Cascade
             zmc_latent = self.presample(segm_video) #;print(zmc_latent.shape)
@@ -1624,17 +1677,17 @@ class MartCascade(StoryGAN):
             h_img = self.upsample3(h_img)
             # h_img = self.seg_c3(g_seg4) * h_img + h_img
 
-			if self.cfg.TWO_STG: # Moda: Image MART branch
-				# Moda: r_code, seq_len, word_emb_dim are already set from the prev "TWO_STG" branch
-				## TODO: make sure next_g & next_img are applicable for segmentation also
-                # r_code = r_code.unsqueeze(1).repeat(1, self.video_len, 1).view(-1, r_code.shape[-1])
-				# seq_len, word_emb_dim = word_embs[0].shape[-2], word_embs[0].shape[-1]
-				h_img2, _ = self.next_g(h_img, r_code, torch.stack(word_embs).transpose(1, 0).reshape(-1, seq_len, word_emb_dim).transpose(-2, -1),
-                                         caption_input_masks.view(-1, caption_input_masks.shape[-1]))
+            if self.cfg.TWO_STG: # Moda: Image MART branch
+                # Moda: r_code, seq_len, word_emb_dim are already set from the prev "TWO_STG" branch
+                ## TODO: make sure next_g & next_img are applicable for segmentation also
+                r_code = r_code.unsqueeze(1).repeat(1, self.video_len, 1).view(-1, r_code.shape[-1])
+                seq_len, word_emb_dim = word_embs[0].shape[-2], word_embs[0].shape[-1]
+                h_img2, _ = self.next_g(h_img, r_code, torch.stack(word_embs).transpose(1, 0).reshape(-1, seq_len, word_emb_dim).transpose(-2, -1),
+                                        caption_input_masks.view(-1, caption_input_masks.shape[-1]))
                 fake_video = self.next_img(h_img2)
-			else:
-				h_img = self.upsample4(h_img) #;print(h_img.shape)
-				fake_video = self.img_seg(h_img)
+            else:
+                h_img = self.upsample4(h_img) #;print(h_img.shape)
+                fake_video = self.img_seg(h_img)
 
             segm_temp = segm_video.view(-1, self.video_len, 1, self.segment_size, self.segment_size)
             segm_temp = segm_temp.permute(0, 2, 1, 3, 4)
@@ -1646,10 +1699,10 @@ class MartCascade(StoryGAN):
 
             if seg==True:
                 return ((zmc_seg, h_seg1, h_seg2, h_seg3), (g_seg1, g_seg2, g_seg3, g_seg4)), \
-                    fake_video,  m_mu, m_logvar, r_mu, r_logvar, segm_video # m_mu(60,365), m_logvar(60,365), r_mu(12,124), r_logvar(12,124)
+                    fake_video, m_mu, m_logvar, r_mu, r_logvar, segm_video # m_mu(60,365), m_logvar(60,365), r_mu(12,124), r_logvar(12,124)
             else:
                 return ((zmc_seg, h_seg1, h_seg2, h_seg3), (g_seg1, g_seg2, g_seg3, g_seg4)), \
-                    fake_video,  m_mu, m_logvar, r_mu, r_logvar, None # m_mu(60,365), m_logvar(60,365), r_mu(12,124), r_logvar(12,124)
+                    fake_video, m_mu, m_logvar, r_mu, r_logvar, None # m_mu(60,365), m_logvar(60,365), r_mu(12,124), r_logvar(12,124)
         else:
             h_code = self.upsample1(zmc_img) # h_code: batch_size*video_len, 1024, 8, 8 *
             h_code = self.upsample2(h_code)  # h_code: batch_size*video_len, 512, 16, 16 *
@@ -1676,14 +1729,14 @@ class MartCascade(StoryGAN):
             fake_video = h.view( int(h.size(0)/self.video_len), self.video_len, self.n_channels, h.size(3), h.size(3)) # 12, 5, 3, 64, 64
             fake_video = fake_video.permute(0, 2, 1, 3, 4) # 12, 3, 5, 64, 64
             #pdb.set_trace()
-            return None, fake_video,  m_mu, m_logvar, r_mu, r_logvar, None # m_mu(60,365), m_logvar(60,365), r_mu(12,124), r_logvar(12,124)
+            return None, fake_video, m_mu, m_logvar, r_mu, r_logvar, None # m_mu(60,365), m_logvar(60,365), r_mu(12,124), r_logvar(12,124)
 
     def sample_images(self, motion_input, content_input, caption_input_ids=None, caption_input_masks=None, labels=None, seg=False): # Moda: Seg flag is added, also extra return
         m_code, m_mu, m_logvar = motion_input, motion_input, motion_input  # self.ca_net(motion_input)
         # print(content_input.shape, cfg.VIDEO_LEN)
         # content_input = content_input.view(-1, cfg.VIDEO_LEN * content_input.shape[2])
         content_input = torch.reshape(content_input, (-1, self.cfg.VIDEO_LEN * content_input.shape[2]))
-        c_code, c_mu, c_logvar = self.ca_net(content_input)
+        r_code, c_mu, c_logvar = self.ca_net(content_input)
         crnn_code, word_embs, _ = self.motion_content_rnn(caption_input_ids.unsqueeze(1), caption_input_masks.unsqueeze(1), c_mu, labels.unsqueeze(1)) # wut
 
         zm_code = self.sample_z_motion(m_code, 1)
@@ -1734,16 +1787,18 @@ class MartCascade(StoryGAN):
             h_seg2 = self.upsample2_seg(h_seg1) #;print(h_seg2.shape)
             h_seg3 = self.upsample3_seg(h_seg2) #;print(h_seg3.shape)
 
-			if self.cfg.TWO_STG: # Moda: Segmentation MART branch
-				## TODO: make sure next_g & next_img are applicable for segmentation also
-                r_code = r_code.unsqueeze(1).repeat(1, self.video_len, 1).view(-1, r_code.shape[-1])
-				seq_len, word_emb_dim = word_embs[0].shape[-2], word_embs[0].shape[-1]
-				h_seg4, _ = self.next_g(h_seg3, r_code, torch.stack(word_embs).transpose(1, 0).reshape(-1, seq_len, word_emb_dim).transpose(-2, -1),
-                                         caption_input_masks.view(-1, caption_input_masks.shape[-1]))
-                segm_img = self.next_img(h_seg4)
-			else:
-				h_seg4 = self.upsample4_seg(h_seg3) #;print(h_seg4.shape)
-				segm_img = self.img_seg(h_seg4)
+            # if self.cfg.TWO_STG: # Moda: Segmentation MART branch (Commented for now)
+            #     ## TODO: make sure next_g & next_img are applicable for segmentation also
+            #     r_code = r_code.unsqueeze(1).repeat(1, self.video_len, 1).view(-1, r_code.shape[-1])
+            #     seq_len, word_emb_dim = word_embs[0].shape[-2], word_embs[0].shape[-1]
+            #     h_seg4, _ = self.next_g(h_seg3, r_code, torch.stack(word_embs).transpose(1, 0).reshape(-1, seq_len, word_emb_dim).transpose(-2, -1),
+            #                                 caption_input_masks.view(-1, caption_input_masks.shape[-1]))
+            #     segm_img = self.next_img(h_seg4)
+            # else:
+            #     h_seg4 = self.upsample4_seg(h_seg3) #;print(h_seg4.shape)
+            #     segm_img = self.img_seg(h_seg4)
+            h_seg4 = self.upsample4_seg(h_seg3) # Moda: upper cond is commented!
+            segm_img = self.img_seg(h_seg4)
 
 			# Moda: cont Cascade
             zmc_latent = self.presample(segm_img) #;print(zmc_latent.shape)
@@ -1763,17 +1818,17 @@ class MartCascade(StoryGAN):
             h_img = self.upsample3(h_img)
             # h_img = self.seg_c3(g_seg4) * h_img + h_img
 
-			if self.cfg.TWO_STG: # Moda: Image MART branch
-				# Moda: r_code, seq_len, word_emb_dim are already set from the prev "TWO_STG" branch
-				## TODO: make sure next_g & next_img are applicable for segmentation also
+            if self.cfg.TWO_STG: # Moda: Image MART branch
+                # Moda: r_code, seq_len, word_emb_dim are already set from the prev "TWO_STG" branch
+                ## TODO: make sure next_g & next_img are applicable for segmentation also
                 # r_code = r_code.unsqueeze(1).repeat(1, self.video_len, 1).view(-1, r_code.shape[-1])
-				# seq_len, word_emb_dim = word_embs[0].shape[-2], word_embs[0].shape[-1]
-				h_img2, _ = self.next_g(h_img, r_code, torch.stack(word_embs).transpose(1, 0).reshape(-1, seq_len, word_emb_dim).transpose(-2, -1),
-                                         caption_input_masks.view(-1, caption_input_masks.shape[-1]))
+                seq_len, word_emb_dim = word_embs[0].shape[-2], word_embs[0].shape[-1]
+                h_img2, _ = self.next_g(h_img, r_code, torch.stack(word_embs).transpose(1, 0).reshape(-1, seq_len, word_emb_dim).transpose(-2, -1),
+                                            caption_input_masks.view(-1, caption_input_masks.shape[-1]))
                 fake_img = self.next_img(h_img2)
-			else:
-				h_img = self.upsample4(h_img) #;print(h_img.shape)
-				fake_img = self.img(h_img)
+            else:
+                h_img = self.upsample4(h_img) #;print(h_img.shape)
+                fake_img = self.img(h_img)
 
             if seg==True:
                 return ((zmc_seg, h_seg1, h_seg2, h_seg3), (g_seg1, g_seg2, g_seg3, g_seg4)), \
@@ -1819,6 +1874,40 @@ class MartCascade(StoryGAN):
         h_seg4 = self.upsample4_seg(h_seg3) #;print(h_seg4.shape)
         segm_img = self.img_seg(h_seg4)
         return segm_img #(( h_seg1, h_seg2, h_seg3, h_seg4), (g_seg1, g_seg2, g_seg3, g_seg4))
+    
+    def motion_content_rnn(self, word_input_ids_list, input_masks_list, c_code, labels, return_memory=False): # Moda: over write NoMART method
+        """
+        Args:
+            input_ids_list: [(N, L)] * step_size
+            input_masks_list: [(N, L)] * step_size with 1 indicates valid bits
+                will not be used when return_memory is True, thus can be None in this case
+            return_memory: bool,
+        Returns:
+        """
+        # [(N, M, D)] * num_hidden_layers, initialized internally
+
+        c_code = self.c_net(c_code)
+
+        memory_list = []
+        memory_list.append([c_code.unsqueeze(1).repeat(1, self.cfg.MART.n_memory_cells, 1), c_code.unsqueeze(1).repeat(1, self.cfg.MART.n_memory_cells, 1)])
+        video_len = word_input_ids_list.shape[1]
+
+        encoded_outputs_list = []  # [(N, L, D)] * step_size
+        for idx in range(video_len):
+            ms, encoded_layer_outputs = self.mart_forward_step(memory_list[-1],
+                                                               word_input_ids_list[:, idx, :],
+                                                               input_masks_list[:, idx, :])
+
+            memory_list.append(ms)
+            encoded_outputs_list.append(encoded_layer_outputs[-1])
+
+        c_m_t = [self.pooler(h_k, input_masks_list[:, idx, :]).unsqueeze(1) for idx, h_k in enumerate(encoded_outputs_list)]
+        mocornn_co = self.mart_fc(torch.cat((torch.cat(c_m_t, dim=1), labels), dim=-1).view(-1, self.content_dim + self.cfg.LABEL_NUM))
+
+        if return_memory:  # used to analyze memory
+            return mocornn_co, encoded_outputs_list, memory_list
+        else:  # normal training/evaluation mode
+            return mocornn_co, encoded_outputs_list, None
 
 class STAGE1_D_IMG(nn.Module):
     def __init__(self, cfg, use_categories = True):
@@ -1850,7 +1939,7 @@ class STAGE1_D_IMG(nn.Module):
             # state size (ndf * 8) x 4 x 4)
             nn.LeakyReLU(0.2, inplace=True)
         )
-        # self.seq_consisten_model = None # Mode: this line is available in CP-CSV (NoCascade)
+        self.seq_consisten_model = None # Mode: this line is available in CP-CSV (NoCascade)
         self.get_cond_logits = D_GET_LOGITS(ndf, nef + self.text_dim + self.label_num)
         self.get_uncond_logits = None
 
@@ -1909,8 +1998,8 @@ class STAGE1_D_SEG(nn.Module): # Moda: extra class for segmentation
             # state size (ndf * 8) x 4 x 4)
             nn.LeakyReLU(0.2, inplace=True)
         )
-        # self.seq_consisten_model = None # Mode: this line is available in CP-CSV (NoCascade)
-        self.get_cond_logits = D_GET_LOGITS(int(ndf), nef + self.text_dim + self.label_num) # Moda: first item is passed to "int()"
+        self.seq_consisten_model = None # Mode: this line is available in CP-CSV (NoCascade)
+        self.get_cond_logits = D_GET_LOGITS(int(ndf), nef + self.text_dim + self.label_num) # Moda: first item is casted to "int()"
         self.get_uncond_logits = None
 
         if use_categories:
@@ -1991,27 +2080,27 @@ class STAGE1_D_STY_V2(nn.Module):
     def define_module(self):
         ndf, nef = self.df_dim, self.ef_dim
         self.encode_img = nn.Sequential(
-            nn.Conv2d(3, ndf, 4, 2, 1, bias=False),, # Moda: in CP-CSV (NoCascade), this is passed to "spectral_norm()"
+            nn.Conv2d(3, ndf, 4, 2, 1, bias=False), # Moda: in CP-CSV (NoCascade), this is passed to "spectral_norm()"
             nn.LeakyReLU(0.2, inplace=True),
             # state size. (ndf) x 32 x 32
-            nn.Conv2d(ndf, ndf * 2, 4, 2, 1, bias=False),, # Moda: in CP-CSV (NoCascade), this is passed to "spectral_norm()"
+            nn.Conv2d(ndf, ndf * 2, 4, 2, 1, bias=False), # Moda: in CP-CSV (NoCascade), this is passed to "spectral_norm()"
             nn.BatchNorm2d(ndf * 2),
             nn.LeakyReLU(0.2, inplace=True),
             # state size (ndf*2) x 16 x 16
-            nn.Conv2d(ndf*2, ndf * 4, 4, 2, 1, bias=False),, # Moda: in CP-CSV (NoCascade), this is passed to "spectral_norm()"
+            nn.Conv2d(ndf*2, ndf * 4, 4, 2, 1, bias=False), # Moda: in CP-CSV (NoCascade), this is passed to "spectral_norm()"
             nn.BatchNorm2d(ndf * 4),
             nn.LeakyReLU(0.2, inplace=True),
             # state size (ndf*4) x 8 x 8
-            nn.Conv2d(ndf*4, ndf * 8, 4, 2, 1, bias=False),, # Moda: in CP-CSV (NoCascade), this is passed to "spectral_norm()"
+            nn.Conv2d(ndf*4, ndf * 8, 4, 2, 1, bias=False), # Moda: in CP-CSV (NoCascade), this is passed to "spectral_norm()"
             nn.BatchNorm2d(ndf * 8),
             # state size (ndf * 8) x 4 x 4)
             nn.LeakyReLU(0.2, inplace=True)
         )
 
         # Moda: this branch is available in CP-CSV (NoCascade)
-        # self.seq_consisten_model = None
-        # if cfg.USE_SEQ_CONSISTENCY:
-        #     self.seq_consisten_model = VideoEncoder()
+        self.seq_consisten_model = None
+        if cfg.USE_SEQ_CONSISTENCY:
+            self.seq_consisten_model = VideoEncoder()
         #     # checkpoint = torch.load('logs/consistencybaseline_0.5/model.pt')
         #     # self.seq_consisten_model.load_state_dict(checkpoint['model'].state_dict())
 

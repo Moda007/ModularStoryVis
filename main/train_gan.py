@@ -1,6 +1,6 @@
 from __future__ import print_function
-import torch.backends.cudnn as cudnn
 import torch
+import torch.backends.cudnn as cudnn
 import torchvision.transforms as transforms
 import PIL
 import argparse
@@ -34,6 +34,16 @@ def parse_args():
 
     args = parser.parse_args()
     return args
+
+def partial(func, /, *args, **keywords): # Moda-fix: replace functools.partial
+    def newfunc(*fargs, **fkeywords):
+        newkeywords = {**keywords, **fkeywords}
+        return func(*args, *fargs, **newkeywords)
+    newfunc.func = func
+    newfunc.args = args
+    newfunc.keywords = keywords
+    return newfunc
+
 
 if __name__ == "__main__":
     args = parse_args()
@@ -75,6 +85,14 @@ if __name__ == "__main__":
         #                       imsize=cfg.IMSIZE,
         #                       transform=image_transform)
         #assert dataset
+        image_transforms_seg = transforms.Compose([ # Moda: add segmentation transformation
+            PIL.Image.fromarray,
+            transforms.Resize((cfg.SESIZE, cfg.SESIZE) ),
+            #transforms.RandomHorizontalFlip(),
+            transforms.ToTensor(),
+            transforms.Normalize([0.5], [0.5])])
+            #transforms.Normalize(mean=0.5, std=0.5)])
+
         def video_transform(video, image_transform):
             vid = []
             for im in video:
@@ -84,22 +102,24 @@ if __name__ == "__main__":
 
         video_len = 5
         n_channels = 3
-        video_transforms = functools.partial(video_transform, image_transform=image_transforms)
+        video_transforms = partial(video_transform, image_transform=image_transforms) # Moda-fix: replace functools.partial
+        # video_transforms = functools.partial(video_transform, image_transform=image_transforms)
 
         counter = np.load(os.path.join(dir_path, 'frames_counter.npy'), allow_pickle=True).item()
         print("----------------------------------------------------------------------------------")
         print("Preparing TRAINING dataset")
         base = data.VideoFolderDataset(dir_path, counter = counter, cache = dir_path, min_len = 4, mode="train")
         storydataset = data.StoryDataset(base, dir_path, video_transforms,
-                                         return_caption=cfg.USE_MART or cfg.IMG_DUAL or cfg.STORY_DUAL)
+                                        return_caption=cfg.USE_MART or cfg.IMG_DUAL or cfg.STORY_DUAL)
         if cfg.USE_MART:
             if cfg.MART.vocab_glove_path == '':
                 cfg.MART.vocab_glove_path = os.path.join(dir_path, 'mart_glove_embeddings.mat')
             storydataset.vocab.extract_glove(cfg.MART.raw_glove_path, cfg.MART.vocab_glove_path)
             cfg.MART.pretrained_embeddings = cfg.MART.vocab_glove_path
 
-        imagedataset = data.ImageDataset(base, dir_path, image_transforms,
-                                         return_caption=cfg.USE_MART or cfg.IMG_DUAL or cfg.STORY_DUAL)
+        imagedataset = data.ImageDataset(base, dir_path, image_transforms, image_transforms_seg, # Moda: add segmentation flags
+                                        use_segment=use_segment, segment_name=cfg.TRAIN.SEGMENT_NAME,
+                                        return_caption=cfg.USE_MART or cfg.IMG_DUAL or cfg.STORY_DUAL)
 
         imageloader = torch.utils.data.DataLoader(
             imagedataset, batch_size=cfg.TRAIN.IM_BATCH_SIZE * num_gpu,
@@ -130,10 +150,12 @@ if __name__ == "__main__":
 
         cfg.DATASET_NAME = 'pororo'
 
+        # Moda:
+        #TODO: add function here, to move Pororo Segmentation to ./data
+
         algo = GANTrainer(cfg, output_dir, ratio = 1.0)
         algo.train(imageloader, storyloader, testloader, cfg.STAGE)
     else:
-
         assert args.checkpoint
         assert args.infer_dir
 
@@ -154,7 +176,7 @@ if __name__ == "__main__":
             transforms.ToTensor(),
             transforms.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5))])
 
-        video_transforms = functools.partial(video_transform, image_transform=image_transforms)
+        video_transforms = partial(video_transform, image_transform=image_transforms) # Moda-fix: replace functools.partial
         counter = np.load(os.path.join(dir_path, 'frames_counter.npy'), allow_pickle=True).item()
 
         test_dir_path = dir_path

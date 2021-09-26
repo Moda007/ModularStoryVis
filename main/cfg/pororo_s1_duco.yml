@@ -6,7 +6,7 @@ GPU_ID: '0'
 Z_DIM: 100
 DATA_DIR: '../data/coco'
 IMSIZE: 64
-WORKERS: 2
+WORKERS: 0 # Moda-fix: changed from 2, to avoid Ran out of input for Dataloader (it is slower now)
 STAGE: 1
 VIDEO_LEN: 5
 VIS_COUNT: 10
@@ -41,6 +41,10 @@ RECURRENT: False
 USE_TRANSFORMER: False
 TWO_STG: True
 COPY_TRANSFORM: True
+
+# Moda: segmentation
+SEGMENT_LEARNING: True
+CASCADE_MODEL: True
 
 MART:
     max_t_len: 5
