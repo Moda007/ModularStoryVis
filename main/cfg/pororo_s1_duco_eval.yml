@@ -42,6 +42,10 @@ USE_TRANSFORMER: False
 TWO_STG: True
 COPY_TRANSFORM: True
 
+# Moda: segmentation
+SEGMENT_LEARNING: True
+CASCADE_MODEL: True
+
 MART:
     max_t_len: 5
     CKPT_PATH: './out/pororo_mart_best/best.chkpt'

@@ -44,8 +44,8 @@ __C.LABEL_NUM = 10 # Moda: = 9 in CP-CSV
 # Training options
 __C.TRAIN = edict()
 __C.TRAIN.FLAG = True
-__C.TRAIN.IM_BATCH_SIZE = 64
-__C.TRAIN.ST_BATCH_SIZE = 64
+__C.TRAIN.IM_BATCH_SIZE = 12 # Moda-fix: was before memory error 64
+__C.TRAIN.ST_BATCH_SIZE = 12 # Moda-fix: was before memory error 64
 __C.TRAIN.MAX_EPOCH = 600
 __C.TRAIN.SNAPSHOT_INTERVAL = 50
 __C.TRAIN.PRETRAINED_MODEL = ''

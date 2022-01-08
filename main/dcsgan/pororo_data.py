@@ -422,7 +422,7 @@ class ImageDataset(torch.utils.data.Dataset): # Moda: match, almost the same as 
             # '_'.join(sub_path.split('/')[-2:])
             im_se_path = os.path.join(self.dir_path, self.segment_name, sub_path) # Moda: use join path
             # im_path = '{}/{}/{}'.format(self.dir_path, self.segment_name, '_'.join(sub_path.split('/')[-2:]) )#self.dir_path+'/''/'+'_'.join(sub_path.split('/')[-2:])
-            im_se = PIL.Image.open(im_se_path)
+            im_se = PIL.Image.open(im_se_path.replace('\\', '/')) # Moda-fix: unify the path seperators
             # v2
             im_se = im_se.convert('L')
             im_se, se_idx = self.dataset.sample_image(im_se) # Moda-fix: add extra redundant return
@@ -433,7 +433,7 @@ class ImageDataset(torch.utils.data.Dataset): # Moda: match, almost the same as 
         id = str(self.dataset[item][0]) # Moda-fix: fix slicing idxs
         id = id.replace('\\', '/')
         id = id.replace('.png','')[1:]
-        im = PIL.Image.open(im_path)
+        im = PIL.Image.open(im_path.replace('\\', '/')) # Moda-fix: unify the path seperators
         image, sample_idx = self.dataset.sample_image(im)
         image = self.transforms(np.array(image))
         subs = self.subtitles[id][0]
@@ -542,16 +542,17 @@ class ImageClfDataset(torch.utils.data.Dataset): # Moda: Only for DuCo
 
     def __getitem__(self, item):
         img_id = self.ids[item]
-        img_path = str(self.images[img_id])[2:-1]
+        img_path = str(self.images[img_id])[1:] #[2:-1] Moda-fix: no need!
 
         if self.out_dir is not None:
             image = PIL.Image.open(os.path.join(self.out_dir, 'img-%s-0.png' % item)).convert('RGB')
         else:
-            image = self.sample_image(PIL.Image.open(os.path.join(self.img_folder, img_path)).convert('RGB'))
+            im_path = os.path.join(self.img_folder, img_path).replace('\\', '/')
+            image = self.sample_image(PIL.Image.open(im_path).convert('RGB')) # Moda-fix: path style issue
 
         # image = self.sample_image(PIL.Image.open(img_path).convert('RGB'))
         # image = Image.open(os.path.join(self.out_dir, 'img-' + str(item) + '.png')).convert('RGB')
-        label = self.labels[img_path.replace('.png', '').replace(self.img_folder + '/', '')]
+        label = self.labels[img_path.replace('.png', '').replace(self.img_folder + '/', '').replace('\\', '/')] # Moda-fix: fix key error
         return self.transform(image), torch.Tensor(label)
 
     def __len__(self):

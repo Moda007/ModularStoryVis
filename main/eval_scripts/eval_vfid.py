@@ -1,6 +1,7 @@
 import torchvision.transforms as transforms
 import argparse
 import os
+from datetime import datetime
 
 import dcsgan.pororo_data as data
 from vfid.fid_score import fid_score
@@ -26,6 +27,16 @@ def main(args):
 
     fid = fid_score(ref_dataset, gen_dataset, cuda=True, normalize=True, r_cache=os.path.join(args.img_ref_dir, 'fid_cache.npz'), batch_size=1)
     print('Frechet Image Distance: ', fid)
+    
+    #Moda: log results
+    log_file_name = 'fid_results.txt'
+    log_file_path = os.path.join(args.img_gen_dir, log_file_name)
+    # dd/mm/YY H:M:S
+    log_time = datetime.now().strftime("%d/%m/%Y %H:%M:%S")
+    
+    with open(log_file_path, 'a') as log_file:
+        log_file.write(f'{args.img_gen_dir}\n{log_time}\nfid score\n\n')
+        log_file.write(f'FID score:\t{fid}\n')
 
 
 if __name__ == "__main__":

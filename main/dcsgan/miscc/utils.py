@@ -565,7 +565,7 @@ def mkdir_p(path): # Moda: almost match
         else:
             raise
 
-def save_test_samples(netG, dataloader, save_path, epoch, mart=False, seg=False): # Moda: no match, keep DuCo
+def save_test_samples(netG, dataloader, save_path, epoch, mart=False, seg=False, test=False): # Moda: no match, keep DuCo
     print('Generating Test Samples...')
     save_images = []
     save_labels = []
@@ -608,7 +608,7 @@ def save_test_samples(netG, dataloader, save_path, epoch, mart=False, seg=False)
 
     save_images = np.concatenate(save_images, 0)
     save_labels = np.concatenate(save_labels, 0)
-    if epoch % 5 == 0 and epoch >= 50:
+    if (epoch % 5 == 0 and epoch >= 50) or test:
         np.save(save_path + '/images-epoch-%s.npy' % epoch, save_images)
         np.save(save_path + '/labels-epoch-%s.npy' % epoch, save_labels)
 

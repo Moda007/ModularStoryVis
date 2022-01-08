@@ -12,6 +12,7 @@ import PIL
 import torchvision.utils as vutils
 import argparse
 from sklearn.metrics import classification_report, accuracy_score
+from datetime import datetime
 
 epsilon = 1e-7
 
@@ -141,7 +142,7 @@ def numpy_to_img(numpy_file, outdir, img_size):
                 img = img.resize((img_size, img_size,))
             img.save(os.path.join(outdir, 'img-%s-%s.png' % (i, j)))
 
-def evaluate_gt(root_image_dir, model_name, model_path):
+def evaluate_gt(root_image_dir, model_name, model_path, mode):
 
     # Number of classes in the dataset
     num_classes = 9
@@ -160,6 +161,15 @@ def evaluate_gt(root_image_dir, model_name, model_path):
 
     model_ft, input_size = initialize_model(model_name, num_classes, feature_extract, use_pretrained=False)
     model_ft.load_state_dict(torch.load(model_path))
+    
+    # Moda: log terminal output
+    log_file_name = 'eval_gt_classifier_results.txt'
+    log_file_path = os.path.join(root_image_dir, log_file_name)
+    # dd/mm/YY H:M:S
+    log_time = datetime.now().strftime("%d/%m/%Y %H:%M:%S")
+
+    log_file = open(log_file_path, 'a')
+    log_file.write(f'{root_image_dir}\n{log_time}\nevaluate\n')
 
     # Detect if we have a GPU available
     device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
@@ -167,13 +177,13 @@ def evaluate_gt(root_image_dir, model_name, model_path):
     model_ft = model_ft.to(device)
     model_ft.eval()  # Set model to evaluate mode
     image_dataset = ImageDataset(data_dir, input_size, mode='val')
-    print("Number of samples in evaluation set: %s" % len(image_dataset))
+    print("Number of samples in evaluation set: %s" % len(image_dataset), file=log_file)
     batch_size = 32
 
     # Create validation dataloaders
     dataloader = torch.utils.data.DataLoader(image_dataset, batch_size=batch_size, shuffle=False, num_workers=4)
 
-    print("Number of batches in evaluation dataloader: %s" % len(dataloader))
+    print("Number of batches in evaluation dataloader: %s" % len(dataloader), file=log_file)
 
     all_predictions = []
     all_labels = []
@@ -214,24 +224,24 @@ def evaluate_gt(root_image_dir, model_name, model_path):
 
     epoch_acc = running_corrects * 100 / (len(image_dataset) * num_classes)
     epoch_recall = running_recalls * 100 / total_positives
-    print('{} Acc: {:.4f} Recall: {:.4f}%'.format(phase, epoch_acc, epoch_recall))
-    print('{} Story Exact Match Acc: {:.4f}%'.format(phase, float(story_accuracy) * 100 / len(image_dataset)))
-    print('{} Image Exact Match Acc: {:.4f}%'.format(phase, float(image_accuracy) * 100 / len(image_dataset)))
+    print('{} Acc: {:.4f} Recall: {:.4f}%'.format(phase, epoch_acc, epoch_recall), file=log_file)
+    print('{} Story Exact Match Acc: {:.4f}%'.format(phase, float(story_accuracy) * 100 / len(image_dataset)), file=log_file)
+    print('{} Image Exact Match Acc: {:.4f}%'.format(phase, float(image_accuracy) * 100 / len(image_dataset)), file=log_file)
 
     all_predictions = np.concatenate(all_predictions, axis=0)
     all_labels = np.concatenate(all_labels, axis=0)
-    print(all_predictions.shape, all_labels.shape, image_accuracy, len(image_dataset))
+    print(all_predictions.shape, all_labels.shape, image_accuracy, len(image_dataset), file=log_file)
     preds = np.round(1 / (1 + np.exp(-all_predictions)))
-    print(classification_report(all_labels, preds, digits=4))
+    print(classification_report(all_labels, preds, digits=4), file=log_file)
 
     for i in range(0, 9):
-        print("Character %s" % i)
-        print(classification_report(all_labels[:, i], preds[:, i]))
+        print("Character %s" % i, file=log_file)
+        print(classification_report(all_labels[:, i], preds[:, i]), file=log_file)
 
     # Inception Score
     all_predictions = all_predictions + epsilon
     py = np.mean(all_predictions, axis=0)
-    print(py, py.shape)
+    print(py, py.shape, file=log_file)
     split_scores = []
     splits = 10
     N = all_predictions.shape[0]
@@ -244,10 +254,11 @@ def evaluate_gt(root_image_dir, model_name, model_path):
             pyx = part[i, :]
             scores.append(entropy(pyx, py))
         split_scores.append(np.exp(np.mean(scores)))
-    print("InceptionScore", np.mean(split_scores), np.std(split_scores))
+    print("InceptionScore", np.mean(split_scores), np.std(split_scores), file=log_file)
+    log_file.colse()
 
 
-def evaluate(root_image_dir, epoch_start, epoch_end, model_name, model_path):
+def evaluate(image_path, data_dir, model_name, model_path, mode):
 
     # Number of classes in the dataset
     num_classes = 9
@@ -257,8 +268,6 @@ def evaluate(root_image_dir, epoch_start, epoch_end, model_name, model_path):
     n_channels = 3
 
     phase = 'eval'
-    is_inception = True if model_name == 'inception' else False
-    data_dir = "../../pororo_png"
 
     model_ft, input_size = initialize_model(model_name, num_classes, feature_extract, use_pretrained=False)
     model_ft.load_state_dict(torch.load(model_path))
@@ -269,130 +278,137 @@ def evaluate(root_image_dir, epoch_start, epoch_end, model_name, model_path):
     model_ft = model_ft.to(device)
     model_ft.eval()  # Set model to evaluate mode
 
-    for epoch in range(epoch_start, epoch_end+1, 10):
+    if image_path.endswith('.npy'):
+        numpy_to_img(image_path, image_path[:-4], input_size)
+        out_img_folder = image_path[:-4]
+    else:
+        out_img_folder = image_path
+    
+    # Moda: log terminal output
+    log_file_name = 'eval_classifier_results.txt'
+    log_file_path = os.path.join(out_img_folder, log_file_name)
+    # dd/mm/YY H:M:S
+    log_time = datetime.now().strftime("%d/%m/%Y %H:%M:%S")
 
-        print("Epoch: %s" % epoch)
-        if not os.path.exists(os.path.join(root_image_dir, 'images-epoch-%s/' % epoch)):
-            numpy_to_img(os.path.join(root_image_dir, 'images-epoch-%s.npy' % epoch),
-                         os.path.join(root_image_dir,'images-epoch-%s/' % epoch), input_size)
+    log_file = open(log_file_path, 'a')
+    log_file.write(f'{out_img_folder}\n{log_time}\nevaluate\n')
 
-        # Create training and validation datasets
-        image_dataset = StoryImageDataset(data_dir, input_size,
-                                          out_img_folder=os.path.join(root_image_dir, 'images-epoch-%s/' % epoch),
-                                          mode='val')
-        print("Number of samples in evaluation set: %s" % len(image_dataset))
-        batch_size = 8
+    # Create training and validation datasets
+    image_dataset = StoryImageDataset(data_dir, input_size, out_img_folder=out_img_folder, mode=mode)
+    print("Number of samples in evaluation set: %s" % len(image_dataset), file=log_file)
+    batch_size = 8
 
-        # Create validation dataloaders
-        dataloader = torch.utils.data.DataLoader(image_dataset, batch_size=batch_size, shuffle=False, num_workers=4)
+    # Create validation dataloaders
+    dataloader = torch.utils.data.DataLoader(image_dataset, batch_size=batch_size, shuffle=False, num_workers=4)
 
-        print("Number of batches in evaluation dataloader: %s" % len(dataloader))
+    print("Number of batches in evaluation dataloader: %s" % len(dataloader), file=log_file)
 
-        all_predictions = []
-        all_labels = []
-        all_labels = []
-        story_accuracy = 0
-        image_accuracy = 0
+    all_predictions = []
+    all_labels = []
+    story_accuracy = 0
+    image_accuracy = 0
 
-        running_corrects = 0
-        running_recalls = 0
-        total_positives = 0
+    running_corrects = 0
+    running_recalls = 0
+    total_positives = 0
 
-        # Iterate over data.
-        for i, (inputs, labels) in tqdm(enumerate(dataloader)):
+    # Iterate over data.
+    for i, (inputs, labels) in tqdm(enumerate(dataloader)):
 
-            inputs = inputs.view(batch_size * video_len, n_channels, inputs.shape[-2], inputs.shape[-1])
-            labels = labels.view(batch_size * video_len, labels.shape[-1])
-            inputs = inputs.to(device)
-            labels = labels.to(device)
+        inputs = inputs.view(batch_size * video_len, n_channels, inputs.shape[-2], inputs.shape[-1])
+        labels = labels.view(batch_size * video_len, labels.shape[-1])
+        inputs = inputs.to(device)
+        labels = labels.to(device)
 
-            # forward
-            # track history if only in train
-            with torch.set_grad_enabled(phase == 'train'):
-                # Get model outputs and calculate loss
-                # Special case for inception because in training it has an auxiliary output. In train
-                #   mode we calculate the loss by summing the final output and the auxiliary output
-                #   but in testing we only consider the final output.
-                outputs = model_ft(inputs)
-                if model_name == 'imgD':
-                    outputs = model_ft.cate_classify(outputs).squeeze()
-                preds = torch.round(nn.functional.sigmoid(outputs))
-                all_predictions.append(preds.cpu().numpy())
-                all_labels.append(labels.cpu().numpy())
+        # forward
+        # track history if only in train
+        with torch.set_grad_enabled(phase == 'train'):
+            # Get model outputs and calculate loss
+            # Special case for inception because in training it has an auxiliary output. In train
+            #   mode we calculate the loss by summing the final output and the auxiliary output
+            #   but in testing we only consider the final output.
+            outputs = model_ft(inputs)
+            if model_name == 'imgD':
+                outputs = model_ft.cate_classify(outputs).squeeze()
+            preds = torch.round(nn.functional.sigmoid(outputs))
+            all_predictions.append(preds.cpu().numpy())
+            all_labels.append(labels.cpu().numpy())
 
-            # statistics
-            iter_corrects = torch.sum(preds == labels.float().data)
-            xidxs, yidxs = torch.where(labels.data == 1)
-            # print(xidxs, yidxs)
-            # print([labels.data[xidx, yidx] == preds[xidx, yidx] for xidx, yidx in zip(xidxs, yidxs)])
-            iter_recalls = sum(
-                [x.item() for x in [labels.float().data[xidx, yidx] == preds[xidx, yidx] for xidx, yidx in zip(xidxs, yidxs)]])
-            total_positives += xidxs.size(0)
+        # statistics
+        iter_corrects = torch.sum(preds == labels.float().data)
+        xidxs, yidxs = torch.where(labels.data == 1)
+        # print(xidxs, yidxs)
+        # print([labels.data[xidx, yidx] == preds[xidx, yidx] for xidx, yidx in zip(xidxs, yidxs)])
+        iter_recalls = sum(
+            [x.item() for x in [labels.float().data[xidx, yidx] == preds[xidx, yidx] for xidx, yidx in zip(xidxs, yidxs)]])
+        total_positives += xidxs.size(0)
 
-            labels = labels.view(batch_size, video_len, labels.shape[-1])
-            preds = preds.view(batch_size, video_len, labels.shape[-1])
+        labels = labels.view(batch_size, video_len, labels.shape[-1])
+        preds = preds.view(batch_size, video_len, labels.shape[-1])
 
-            for label, pred in zip(labels, preds):
-                if torch.all(torch.eq(label.float().data, pred)):
-                    story_accuracy += 1
-                for l, p in zip(label, pred):
-                    if torch.all(torch.eq(l.float().data, p)):
-                        image_accuracy += 1
+        for label, pred in zip(labels, preds):
+            if torch.all(torch.eq(label.float().data, pred)):
+                story_accuracy += 1
+            for l, p in zip(label, pred):
+                if torch.all(torch.eq(l.float().data, p)):
+                    image_accuracy += 1
 
-            running_corrects += iter_corrects
-            running_recalls += iter_recalls
+        running_corrects += iter_corrects
+        running_recalls += iter_recalls
 
-        all_predictions = np.concatenate(all_predictions, axis=0)
-        all_labels = np.concatenate(all_labels, axis=0)
-        print(all_predictions.shape, all_labels.shape, image_accuracy, len(image_dataset))
-        preds = np.round(1 / (1 + np.exp(-all_predictions)))
-        print(classification_report(all_labels, all_predictions, digits=4))
-        print("Accuracy: ", accuracy_score(all_labels, preds))
+    all_predictions = np.concatenate(all_predictions, axis=0)
+    all_labels = np.concatenate(all_labels, axis=0)
+    print(all_predictions.shape, all_labels.shape, image_accuracy, len(image_dataset), file=log_file)
+    preds = np.round(1 / (1 + np.exp(-all_predictions)))
+    print(classification_report(all_labels, all_predictions, digits=4), file=log_file)
+    print("Accuracy: ", accuracy_score(all_labels, preds), file=log_file)
 
-        epoch_acc = float(running_corrects) * 100 / (all_labels.shape[0] * all_labels.shape[1])
-        epoch_recall = float(running_recalls) * 100 / total_positives
-        print('Manually calculated accuracy: ', epoch_acc)
-        print('{} Acc: {:.4f} Recall: {:.4f}%'.format(phase, accuracy_score(all_labels, preds), epoch_recall))
-        print('{} Story Exact Match Acc: {:.4f}%'.format(phase, story_accuracy*100/len(image_dataset)))
-        print('{} Image Exact Match Acc: {:.4f}%'.format(phase, image_accuracy * 100 / (len(image_dataset)*video_len)))
+    epoch_acc = float(running_corrects) * 100 / (all_labels.shape[0] * all_labels.shape[1])
+    epoch_recall = float(running_recalls) * 100 / total_positives
+    print('Manually calculated accuracy: ', epoch_acc, file=log_file)
+    print('{} Acc: {:.4f} Recall: {:.4f}%'.format(phase, accuracy_score(all_labels, preds), epoch_recall), file=log_file)
+    print('{} Story Exact Match Acc: {:.4f}%'.format(phase, story_accuracy*100/len(image_dataset)), file=log_file)
+    print('{} Image Exact Match Acc: {:.4f}%'.format(phase, image_accuracy * 100 / (len(image_dataset)*video_len)), file=log_file)
 
-        np.save(os.path.join(root_image_dir, 'epoch-%s-prediction-probs.npy' % epoch), 1 / (1 + np.exp(-all_predictions)))
-        np.save(os.path.join(root_image_dir, 'labels.npy'), all_labels)
+    np.save(os.path.join(out_img_folder, 'prediction-probs.npy'), 1 / (1 + np.exp(-all_predictions)))
+    np.save(os.path.join(out_img_folder, 'labels.npy'), all_labels)
 
-        # Inception Score
-        all_predictions = all_predictions + epsilon
-        py = np.mean(all_predictions, axis=0)
-        print(py, py.shape)
-        split_scores = []
-        splits = 10
-        N= all_predictions.shape[0]
-        for k in range(splits):
-            part = all_predictions[k * (N // splits): (k + 1) * (N // splits), :]
-            py = np.mean(part, axis=0)
-            scores = []
+    # Inception Score
+    all_predictions = all_predictions + epsilon
+    py = np.mean(all_predictions, axis=0)
+    print(py, py.shape)
+    split_scores = []
+    splits = 10
+    N= all_predictions.shape[0]
+    for k in range(splits):
+        part = all_predictions[k * (N // splits): (k + 1) * (N // splits), :]
+        py = np.mean(part, axis=0)
+        scores = []
 
-            for i in range(part.shape[0]):
-                pyx = part[i, :]
-                scores.append(entropy(pyx, py))
-            split_scores.append(np.exp(np.mean(scores)))
-        print("InceptionScore", np.mean(split_scores), np.std(split_scores))
+        for i in range(part.shape[0]):
+            pyx = part[i, :]
+            scores.append(entropy(pyx, py))
+        split_scores.append(np.exp(np.mean(scores)))
+    print("InceptionScore", np.mean(split_scores), np.std(split_scores), file=log_file)
+    log_file.close()
 
 
 if __name__ == "__main__":
 
     parser = argparse.ArgumentParser(description='Evaluate for Character Recall & InceptionScore')
-    parser.add_argument('--image_dir',  type=str, required=True)
-    parser.add_argument('--epoch_start', type=int, default=0)
-    parser.add_argument('--epoch_end', type=int, default=120)
+    parser.add_argument('--image_path',  type=str, default='')
+    parser.add_argument('--data_dir', type=str, required=True)
     parser.add_argument('--model_path', type=str, required=True)
     parser.add_argument('--model_name', type=str, required=True)
+    parser.add_argument('--mode', type=str, required=True)
     parser.add_argument('--ground_truth', action='store_true')
     args = parser.parse_args()
 
     if args.ground_truth:
-        evaluate_gt(args.image_dir, args.model_name, args.model_path)
+        evaluate_gt(args.data_dir, args.model_name, args.model_path, args.mode)
     else:
-        evaluate(args.image_dir, args.epoch_start, args.epoch_end, args.model_name, args.model_path)
+        assert args.image_path, "Please enter the path to generated images"
+        evaluate(args.image_path, args.data_dir, args.model_name, args.model_path, args.mode)
 
     # numpy_to_img(os.path.join(args.image_dir, 'images-epoch-%s.npy' % args.epoch_start),
     #              os.path.join(args.image_dir, 'images-epoch-%s/' % args.epoch_start), 299)

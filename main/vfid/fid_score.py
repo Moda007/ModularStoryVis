@@ -47,7 +47,6 @@ from .inception import InceptionV3
 
 def calculate_activation_statistics(imgs, model, batch_size=32, dims=2048, cuda=False, normalize=False, verbose=0, is_ref=False): # Moda: almost the same as CP-CSV "fid/fid_score.py"
     """Calculates the activations of the pool_3 layer for all images.
-
 	Params:
 		imgs: image dataset
 		model: Instance of inception model
@@ -159,7 +158,7 @@ def calculate_frechet_distance(mu1, sigma1, mu2, sigma2, eps=1e-6): # Moda: matc
 			np.trace(sigma1) + np.trace(sigma2) - 2 * np.trace(covmean))
 
 def fid_score(r_imgs, g_imgs, batch_size=32, dims=2048, cuda=False, normalize=False, r_cache=None, verbose=0): # Moda: almost the same as CP-CSV "fid/fid_score.py"
-    block_idx = InceptionV3.BLOCK_INDEX_BY_DIM[dims]
+	block_idx = InceptionV3.BLOCK_INDEX_BY_DIM[dims]
 	model = InceptionV3([block_idx])
 
 	# cache real dataset

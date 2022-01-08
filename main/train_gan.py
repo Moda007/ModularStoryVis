@@ -31,6 +31,7 @@ def parse_args():
     #### inference args
     parser.add_argument('--checkpoint', type=str, default='', help='path to trained checkpoint')
     parser.add_argument('--infer_dir', type=str, default='', help='path to output directory')
+    parser.add_argument('--test_code', type=int, default=1, help='test batch code')
 
     args = parser.parse_args()
     return args
@@ -206,4 +207,4 @@ if __name__ == "__main__":
             drop_last=True, shuffle=False, num_workers=int(cfg.WORKERS))
 
         algo = GANTrainer(cfg)
-        algo.sample(testloader, args.checkpoint, args.infer_dir, cfg.STAGE)
+        algo.sample(testloader, args.checkpoint, args.infer_dir, args.test_code, cfg.STAGE, not cfg.TRAIN.FLAG)

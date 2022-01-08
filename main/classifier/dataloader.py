@@ -118,12 +118,12 @@ class StoryImageDataset(torch.utils.data.Dataset): # Moda: only for DuCo
     def __getitem__(self, item):
 
         img_id = self.ids[item]
-        img_paths = [str(self.images[img_id])[2:-1]] + [str(self.followings[img_id][k])[2:-1] for k in range(0, self.video_len-1)]
+        img_paths = [str(self.images[img_id])[1:]] + [str(self.followings[img_id][k]) for k in range(0, self.video_len-1)] # Moda-fix: dictionary key error fix
         if self.out_dir is not None:
             images = [Image.open(os.path.join(self.out_dir, 'img-%s-%s.png' % (item, k))).convert('RGB') for k in range(self.video_len)]
         else:
             images = [self.sample_image(Image.open(os.path.join(self.img_folder, path)).convert('RGB')) for path in img_paths]
-        labels = [self.labels[path.replace('.png', '').replace(self.img_folder + '/', '')] for path in img_paths]
+        labels = [self.labels[path.replace('.png', '').replace(self.img_folder + '/', '').replace('\\','/')] for path in img_paths] # Moda-fix: dictionary key error fix
         return torch.cat([self.transform(image).squeeze(0) for image in images], dim=0), torch.tensor(np.vstack(labels))
 
     def __len__(self):

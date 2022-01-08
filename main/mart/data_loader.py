@@ -505,8 +505,10 @@ class CaptioningDataset(data.Dataset):
         # if self.mode == 'train':
         data_id = self.ids[index]
         image_seq_paths = [self.images[data_id].decode('utf-8')]
+        # Moda-Fix: remove .decode('utf-8')] and the first '/' otherwise path.join won't work
+        # image_seq_paths = [str(self.images[data_id]).replace('\\', '/')[1:] ]
         for img_file in self.followings[data_id]:
-            image_seq_paths.append(img_file.decode('utf-8'))
+            image_seq_paths.append(img_file.decode('utf-8')) # Moda-Fix: remove .decode('utf-8')]
         ann_ids = [os.path.join(img_path.split('/')[-2], img_path.split('/')[-1]) for img_path in image_seq_paths]
         raw_captions = [self.annotations[ann_id] for ann_id in ann_ids]
 

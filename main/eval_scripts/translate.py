@@ -12,6 +12,9 @@ from mart.translator import Translator
 from mart.data_loader import get_loader, prepare_batch_inputs, MyInceptionFeatureExtractor
 from mart.utils import save_json
 
+from jury import Jury
+from datetime import datetime
+
 def init_feature_extractor(debug=False):
 
     if debug:
@@ -142,7 +145,6 @@ def main():
 
     parser.add_argument("--eval_mode", type=str, default="val",
                         choices=["val", "test"], help="evaluate on val/test set, yc2 only has val")
-    parser.add_argument("--res_dir", required=True, help="path to dir containing model .pt file")
     parser.add_argument("--batch_size", type=int, default=100, help="batch size")
 
     # beam search configs
@@ -169,92 +171,124 @@ def main():
     opt = parser.parse_args()
     opt.cuda = not opt.no_cuda
 
-    # random seed
-    random.seed(opt.seed)
-    np.random.seed(opt.seed)
-    torch.manual_seed(opt.seed)
-
-    checkpoint = torch.load(os.path.join(opt.res_dir, opt.checkpoint_file))
-
-    # add some of the train configs
-    train_opt = checkpoint["opt"]  # EDict(load_json(os.path.join(opt.res_dir, "model.cfg.json")))
-    for k in train_opt.__dict__:
-        if k not in opt.__dict__:
-            setattr(opt, k, getattr(train_opt, k))
-    print("train_opt", train_opt)
-    opt.val_batch_size = opt.batch_size
-
+    # Skip translating if files are already there:
+    # res_dir = os.path.dirname(opt.pred_dir)
+    res_dir = os.path.abspath(opt.pred_dir)
     decoding_strategy = "beam{}_lp_{}_la_{}".format(
         opt.beam_size, opt.length_penalty_name, opt.length_penalty_alpha) if opt.use_beam else "greedy"
-    save_json(vars(opt),
-              os.path.join(opt.res_dir, "{}_eval_cfg.json".format(decoding_strategy)),
-              save_pretty=True)
-
-    # if opt.dset_name == "anet":
-    #     reference_files_map = {
-    #         "val": [os.path.join(opt.data_dir, e) for e in
-    #                 ["anet_entities_val_1_para.json", "anet_entities_val_2_para.json"]],
-    #         "test": [os.path.join(opt.data_dir, e) for e in
-    #                  ["anet_entities_test_1_para.json", "anet_entities_test_2_para.json"]]}
-    # else:  # yc2
-    #     reference_files_map = {"val": [os.path.join(opt.data_dir, "yc2_val_anet_format_para.json")]}
-
-    # for eval_mode in opt.eval_splits:
-
-    vocab_threshold = 5
-    # hardcoded for InceptionNet as feature extractor
-    im_input_size = 299
-    vocab_from_file = True
-    transform_val = transforms.Compose([
-        transforms.Resize(im_input_size),
-        transforms.CenterCrop(im_input_size),
-        transforms.ToTensor(),
-        transforms.Normalize([0.485, 0.456, 0.406], [0.229, 0.224, 0.225])
-    ])
-
-    print("Start evaluating {}".format(opt.eval_mode))
-    # add 10 at max_n_sen to make the inference stage use all the segments
-    eval_data_loader = get_loader(transform=transform_val,
-                                  data_dir=opt.data_dir,
-                                  mode=opt.eval_mode,
-                                  batch_size=opt.val_batch_size,
-                                  vocab_threshold=vocab_threshold,
-                                  vocab_from_file=vocab_from_file,
-                                  pred_img_dir=opt.pred_dir,
-                                  vocab_file=os.path.join(opt.data_dir, 'videocap_vocab.pkl'))
-    # eval_references = reference_files_map[eval_mode]
-
-    # setup model
-    translator = Translator(opt, checkpoint)
-
-    feature_extractor = init_feature_extractor(opt.debug)
-
-    device = torch.device("cuda" if opt.cuda else "cpu")
-
-    pred_file = os.path.join(opt.res_dir, "{}_pred_{}.json".format(decoding_strategy, opt.eval_mode))
-    pred_file = os.path.abspath(pred_file)
-    # if not os.path.exists(pred_file):
-    json_res = run_translate(eval_data_loader, translator, opt,
-                             feature_extractor, device, eval_data_loader.dataset.vocab)
-    save_json(json_res, pred_file, save_pretty=True)
-    # else:
-    # print("Using existing prediction file at {}".format(pred_file))
-
-    with open(pred_file, 'r') as f:
-        d = json.load(f)
+    pred_file = os.path.join(res_dir, "{}_pred_{}.json".format(decoding_strategy, opt.eval_mode))
+    # pred_file = os.path.abspath(pred_file)
+    hyps_file = pred_file.replace(".json", "_hyps.txt")
+    refs_file = pred_file.replace(".json", "_refs.txt")
     hyps = []
     refs = []
-    for res in d["results"]:
-        hyps.append(res["sentence"])
-        refs.append(res["gt_sentence"])
-    with open(pred_file.replace(".json", "_hyps.txt"), "w") as f:
-        f.write("\n".join(hyps))
-    with open(pred_file.replace(".json", "_refs.txt"), "w") as f:
-        f.write("\n".join(refs))
+
+    if not (os.path.isfile(hyps_file) and os.path.isfile(refs_file)):
+        # random seed
+        random.seed(opt.seed)
+        np.random.seed(opt.seed)
+        torch.manual_seed(opt.seed)
+
+        checkpoint = torch.load(opt.checkpoint_file)
+
+        # add some of the train configs
+        train_opt = checkpoint["opt"]  # EDict(load_json(os.path.join(opt.res_dir, "model.cfg.json")))
+        for k in train_opt.__dict__:
+            if k not in opt.__dict__:
+                setattr(opt, k, getattr(train_opt, k))
+        print("train_opt", train_opt)
+        opt.val_batch_size = opt.batch_size
+
+        decoding_strategy = "beam{}_lp_{}_la_{}".format(
+            opt.beam_size, opt.length_penalty_name, opt.length_penalty_alpha) if opt.use_beam else "greedy"
+        # res_dir = os.path.dirname(opt.checkpoint_file)
+        save_json(vars(opt),
+                os.path.join(res_dir, "{}_eval_cfg.json".format(decoding_strategy)),
+                save_pretty=True)
+
+        # if opt.dset_name == "anet":
+        #     reference_files_map = {
+        #         "val": [os.path.join(opt.data_dir, e) for e in
+        #                 ["anet_entities_val_1_para.json", "anet_entities_val_2_para.json"]],
+        #         "test": [os.path.join(opt.data_dir, e) for e in
+        #                  ["anet_entities_test_1_para.json", "anet_entities_test_2_para.json"]]}
+        # else:  # yc2
+        #     reference_files_map = {"val": [os.path.join(opt.data_dir, "yc2_val_anet_format_para.json")]}
+
+        # for eval_mode in opt.eval_splits:
+
+        vocab_threshold = 5
+        # hardcoded for InceptionNet as feature extractor
+        im_input_size = 299
+        vocab_from_file = True
+        transform_val = transforms.Compose([
+            transforms.Resize(im_input_size),
+            transforms.CenterCrop(im_input_size),
+            transforms.ToTensor(),
+            transforms.Normalize([0.485, 0.456, 0.406], [0.229, 0.224, 0.225])
+        ])
+
+        print("Start evaluating {}".format(opt.eval_mode))
+        # add 10 at max_n_sen to make the inference stage use all the segments
+        eval_data_loader = get_loader(transform=transform_val,
+                                    data_dir=opt.data_dir,
+                                    mode=opt.eval_mode,
+                                    batch_size=opt.val_batch_size,
+                                    vocab_threshold=vocab_threshold,
+                                    vocab_from_file=vocab_from_file,
+                                    pred_img_dir=opt.pred_dir,
+                                    vocab_file=os.path.join(opt.data_dir, 'videocap_vocab.pkl'))
+        # eval_references = reference_files_map[eval_mode]
+
+        # setup model
+        translator = Translator(opt, checkpoint)
+
+        feature_extractor = init_feature_extractor(opt.debug)
+
+        device = torch.device("cuda" if opt.cuda else "cpu")
+
+        # pred_file = os.path.join(res_dir, "{}_pred_{}.json".format(decoding_strategy, opt.eval_mode))
+        # pred_file = os.path.abspath(pred_file)
+        # if not os.path.exists(pred_file):
+        json_res = run_translate(eval_data_loader, translator, opt,
+                                feature_extractor, device, eval_data_loader.dataset.vocab)
+        save_json(json_res, pred_file, save_pretty=True)
+        # else:
+        # print("Using existing prediction file at {}".format(pred_file))
+
+        with open(pred_file, 'r') as f:
+            d = json.load(f)
+        # hyps = []
+        # refs = []
+        for res in d["results"]:
+            hyps.append(res["sentence"])
+            refs.append(res["gt_sentence"])
+        with open(hyps_file, "w") as f:
+            f.write("\n".join(hyps))
+        with open(refs_file, "w") as f:
+            f.write("\n".join(refs))
 
     # # BLEU Evaluation
-    eval_command = ["nlg-eval", "--hypothesis=" + pred_file.replace(".json", "_hyps.txt"), "--references=" + pred_file.replace(".json", "_refs.txt")]
-    subprocess.call(eval_command)
+    # eval_command = ["nlg-eval", "--hypothesis=" + pred_file.replace(".json", "_hyps.txt"), "--references=" + pred_file.replace(".json", "_refs.txt")]
+    # subprocess.call(eval_command)
+    JURY = Jury()
+    metrics_dict = JURY.evaluate(predictions=hyps, references=refs)
+    
+    #Moda: log results
+    log_file_name = 'translate_results.txt'
+    log_file_path = os.path.join(opt.pred_dir, log_file_name)
+    # dd/mm/YY H:M:S
+    log_time = datetime.now().strftime("%d/%m/%Y %H:%M:%S")
+    all_metrics = ['bleu_1', 'bleu_2', 'bleu_3', 'bleu_4', 'meteor', 'rouge']
+    
+    with open(log_file_path, 'a') as log_file:
+        log_file.write(f'{opt.pred_dir}\n{log_time}\ntranslate\n\n')
+        log_file.write(f'empty_predictions:\t{metrics_dict["empty_predictions"]}\n')
+        log_file.write(f'total_items:\t{metrics_dict["total_items"]}\n')
+        for metric in all_metrics:
+            log_file.write(f'{metric}:\n')
+            for sub_metric, value in metrics_dict[metric].items():
+                log_file.write(f'\t{sub_metric}:\t{value}\n')
 
     # # COCO language evaluation
     # lang_file = pred_file.replace(".json", "_lang.json")

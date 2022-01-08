@@ -346,7 +346,7 @@ class GANTrainer(object):
         #save_test_samples(netG, testloader, self.test_dir)
         for epoch in range(self.max_epoch + 1):
             # Moda-XXX
-            if epoch > 1: break
+            # if epoch > 1: break
             print(f">>> epoch ::: {epoch}/{self.max_epoch + 1}")
             l = self.ratio * (2. / (1. + np.exp(-10. * epoch)) - 1)
             start_t = time.time()
@@ -368,7 +368,7 @@ class GANTrainer(object):
 
             for i, data in tqdm(enumerate(storyloader, 0)):
                 # Moda-XXX
-                if i > 0: break
+                # if i > 0: break
                 print(f">>> storyloader ::: {i}/{len(storyloader)}")
                 ######################################################
                 # (1) Prepare training data
@@ -456,7 +456,7 @@ class GANTrainer(object):
                 lr_im_fake, im_fake, im_mu, im_logvar, cim_mu, cim_logvar, se_fake = netG.sample_images(*im_inputs) # im_mu (60,489), cim_mu (60,124)
 
                 characters_mu = (st_labels.mean(1)>0).type(torch.FloatTensor) # which character exists in the full story (5 descriptions)
-                if self.cuda_is_available: characters_mu.cuda() # Moda-fix: add cuda condition
+                if self.cuda_is_available: characters_mu = characters_mu.cuda() # Moda-fix: add cuda condition
                 st_mu = torch.cat((c_mu, st_motion_input[:,:, :self.cfg.TEXT.DIMENSION].mean(1).squeeze(), characters_mu), 1)
 
                 im_mu = torch.cat((im_motion_input, cim_mu), 1)
@@ -505,9 +505,6 @@ class GANTrainer(object):
                 # (2) Update G network
                 ###########################
                 for g_iter in range(self.cfg.TRAIN.UPDATE_RATIO):
-                    # Moda-XXX
-                    if g_iter > 0: break
-                    print(f">>> g_iter ::: {g_iter}/{self.cfg.TRAIN.UPDATE_RATIO}")
                     netG.zero_grad()
                     if self.use_mart:
                         st_inputs = (st_motion_input, st_content_input, st_input_ids, st_masks, st_labels, self.use_segment)
@@ -552,7 +549,7 @@ class GANTrainer(object):
                     #     self._logger.add_scalar('G/reconstruct_loss', reconstruct_loss.data, step)
 
                     characters_mu = (st_labels.mean(1)>0).type(torch.FloatTensor)
-                    if self.cuda_is_available: characters_mu.cuda() # Moda-fix: add cuda condition
+                    if self.cuda_is_available: characters_mu = characters_mu.cuda() # Moda-fix: add cuda condition
                     st_mu = torch.cat((c_mu, st_motion_input[:,:, :self.cfg.TEXT.DIMENSION].mean(1).squeeze(), characters_mu), 1)
 
                     im_mu = torch.cat((im_motion_input, cim_mu), 1)
@@ -669,11 +666,11 @@ class GANTrainer(object):
         # Moda
         save_model(netG, netD_im, netD_st, netD_se, self.max_epoch, self.model_dir)
 
-    def sample(self, testloader, generator_weight_path, out_dir, stage=1):
+    def sample(self, testloader, generator_weight_path, out_dir, test_code=1, stage=1, test=False):
 
         if stage == 1:
-            netG, _, _, _ = self.load_network_stageI(self.use_mart, self.use_segment) # Moda: extra return
+            netG, _, _, _ = self.load_network_stageI() # Moda: extra return
         else:
             raise ValueError
         netG.load_state_dict(torch.load(generator_weight_path))
-        save_test_samples(netG, testloader, out_dir, 60, mart=self.use_mart, seg=self.use_segment)
+        save_test_samples(netG, testloader, out_dir, test_code, mart=self.use_mart, seg=self.use_segment, test=test)
