@@ -1,5 +1,5 @@
 # Modular StoryGAN
-Modular StoryGAN with Background and Theme Awareness for Story Visualization.
+Modular StoryGAN with Background and Theme Awareness for Story Visualization. <br>
 Paper link: https://link.springer.com/chapter/10.1007/978-3-031-09037-0_23
 
 ## Acknowledgement
