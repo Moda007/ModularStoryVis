@@ -36,7 +36,7 @@ Please refer to this repository and cite our publication when using this work.
 ```
 
 ## License
-Other work and this work licences are included in <a href="./Licenses/">Licenses</a> folder.
+Other work and this work licences are included in <a href="./Licenses/">Licenses</a> folder. <br>
 This work license is: <a href="./Licenses/LICENSE">GNU Affero General Public License v3.0</a>.
 
 ## Note
