@@ -6,8 +6,8 @@ Paper link: https://link.springer.com/chapter/10.1007/978-3-031-09037-0_23
 The code in this repository has been adopted and merged from both  [StoryViz (DuCo)](https://github.com/adymaharana/StoryViz) and [ECCV2020_CPCSV](https://github.com/yunzhusong/ECCV2020_CPCSV).
 
 ## Introduction
-In story visualization task, given a series of natural language sentences that compose a story, a sequence of images should be generated that correspond to the sentences.
-We proposed a new modular model architecture named **Modular StoryGAN** containing the best promising components of [StoryViz (DuCo)](https://github.com/adymaharana/StoryViz) and [ECCV2020_CPCSV](https://github.com/yunzhusong/ECCV2020_CPCSV) to address the local and global consistency challenge which is faced by them.
+In story visualization task, given a series of natural language sentences that compose a story, a sequence of images should be generated that correspond to the sentences. <br>
+We proposed a new modular model architecture named **Modular StoryGAN** containing the best promising components of [StoryViz (DuCo)](https://github.com/adymaharana/StoryViz) and [ECCV2020_CPCSV](https://github.com/yunzhusong/ECCV2020_CPCSV) to address the local and global consistency challenge which is faced by them. <br>
 Additionally, to measure the *local* and *global* consistency we introduced **background & theme awareness**, which are expected attributes of the solutions.
 Based on the human evaluation, the generated images demonstrate that Modular StoryGAN possesses background and theme awareness. Besides the subjective evaluation, the objective one also shows that our model outperforms the state-of-the-art [StoryViz (DuCo)](https://github.com/adymaharana/StoryViz) and [ECCV2020_CPCSV](https://github.com/yunzhusong/ECCV2020_CPCSV) models.
 
