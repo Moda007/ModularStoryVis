@@ -23,7 +23,7 @@ Training, inference and evaluation procedure is similar to the one in [StoryViz 
 Please refer to this repository and cite our publication when using this work.
 
 ## Pretrained model and generated samples
-The pretrained model and sample of generated data can be downloaded from [ModularStoryGAN folder]([https://github.com/adymaharana/StoryViz](https://bmeedu-my.sharepoint.com/:f:/g/personal/alshouha_edu_bme_hu/EkkRkgqDfHtDjNWwjDnRuXkB3Pi3A_uXX8f05YhgqJyn3A?e=Ri0faC)).
+The pretrained model and sample of generated data can be downloaded from [ModularStoryGAN folder](https://bmeedu-my.sharepoint.com/:f:/g/personal/alshouha_edu_bme_hu/EkkRkgqDfHtDjNWwjDnRuXkB3Pi3A_uXX8f05YhgqJyn3A?e=Ri0faC)).
 
 ## Cite
 ```
