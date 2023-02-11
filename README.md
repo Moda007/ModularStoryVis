@@ -41,6 +41,3 @@ The pretrained model and sample of generated data can be downloaded from [Modula
 ## License
 Other work and this work licences are included in <a href="./Licenses/">Licenses</a> folder. <br>
 This work license is: <a href="./Licenses/LICENSE">GNU Affero General Public License v3.0</a>.
-
-## Note
-This code is ready to be used, however, its development is *in-progress* state.
